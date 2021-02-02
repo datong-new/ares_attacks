@@ -58,8 +58,6 @@ class Attacker(BatchAttack):
         # calculate loss' gradient with relate to the adversarial example
         # grad.shape == (batch_size, D)
         xs_lo, xs_hi = self.xs_var - eps, self.xs_var + eps
-        self.xs_adv_var = tf.clip_by_value(self.xs_adv_var, xs_lo, xs_hi)
-        self.xs_adv_var = tf.clip_by_value(self.xs_adv_var,self.model.x_min, self.model.x_max)
 
 
         self.xs_adv_model = tf.reshape(self.xs_adv_var, (batch_size, *self.model.x_shape))
@@ -89,7 +87,7 @@ class Attacker(BatchAttack):
         self.setup_xs = [self.xs_var.assign(tf.reshape(self.xs_ph, xs_flatten_shape)),
                          self.xs_adv_var.assign(tf.reshape(self.xs_adv_var_ph, xs_flatten_shape))]
         self.setup_ys = self.ys_var.assign(self.ys_ph)
-        self.iteration = 5
+        self.iteration = 30
 
     def config(self, **kwargs):
         if 'magnitude' in kwargs:
