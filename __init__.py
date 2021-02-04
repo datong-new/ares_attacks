@@ -72,7 +72,12 @@ class Attacker(BatchAttack):
 
 
         self.grad = tf.gradients(self.loss, self.xs_adv_var)[0]
-        self.grad = self.grad+self.prev_grad
+        self.grad = tf.reshape(self.grad, self.xs_ph.shape)
+        self.grad = self.grad / tf.reduce_mean(tf.abs(self.grad), [1, 2, 3], keep_dims=True)
+        self.grad = tf.reshape(self.grad, xs_flatten_shape)
+
+        self.grad = self.prev_grad + self.grad
+
         self.update_prev_grad = self.prev_grad.assign(self.grad)
         # update the adversarial example
         grad_sign = tf.sign(self.grad)
