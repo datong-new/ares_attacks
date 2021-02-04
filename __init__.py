@@ -6,6 +6,21 @@ from ares.attack.utils import get_xs_ph, get_ys_ph, maybe_to_array
 from ares.loss.base import Loss 
 from ares.loss import CrossEntropyLoss
 
+
+def input_diversity(input_tensor, low_size, high_size):
+
+    rnd = tf.random_uniform((), low_size, high_size, dtype=tf.int32)
+    rescaled = tf.image.resize_images(input_tensor, [rnd, rnd], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+    h_rem = high_size - rnd
+    w_rem = high_size - rnd
+    pad_top = tf.random_uniform((), 0, h_rem, dtype=tf.int32)
+    pad_bottom = h_rem - pad_top
+    pad_left = tf.random_uniform((), 0, w_rem, dtype=tf.int32)
+    pad_right = w_rem - pad_left
+    padded = tf.pad(rescaled, [[0, 0], [pad_top, pad_bottom], [pad_left, pad_right], [0, 0]], constant_values=0.)
+    padded.set_shape((input_tensor.shape[0], high_size, high_size, 3))
+    return tf.cond(tf.random_uniform(shape=[1])[0] < tf.constant(0.4), lambda: padded, lambda: input_tensor)
+
 class MyLoss(Loss):
     def __init__(self, model):
         self.model = model
@@ -65,7 +80,15 @@ class Attacker(BatchAttack):
 
         self.xs_adv_model = tf.reshape(self.xs_adv_var, (batch_size, *self.model.x_shape))
 
-        self.loss, self.stop_mask = loss(self.xs_adv_model, self.ys_var)
+        #self.loss, self.stop_mask = loss(self.xs_adv_model, self.ys_var)
+        if self.model.x_shape[-2] == 32: # cifar
+            self.loss, self.stop_mask = loss(input_diversity(self.xs_adv_model, 28, 32), self.ys_var)
+        else: #imagenet
+            self.loss, self.stop_mask = loss(input_diversity(self.xs_adv_model, self.model.x_shape[-2]-10, self.model.x_shape[-2]), self.ys_var)
+
+
+
+
         self.stop_mask = tf.cast(self.stop_mask, dtype=tf.float32)
         self.stop_mask = tf.expand_dims(self.stop_mask, axis=1)
 
