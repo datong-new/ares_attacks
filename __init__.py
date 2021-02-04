@@ -34,12 +34,17 @@ class Attacker(BatchAttack):
         # placeholder for batch_attack's input
         self.xs_ph = get_xs_ph(model, batch_size)
         self.xs_adv_var_ph = get_xs_ph(model, batch_size)
+        self.prev_grad_ph = get_xs_ph(model, batch_size)
+
+
         self.ys_ph = get_ys_ph(model, batch_size)
         # flatten shape of xs_ph
         xs_flatten_shape = (batch_size, np.prod(self.model.x_shape))
         # store xs and ys in variables to reduce memory copy between tensorflow and python
         # variable for the original example with shape of (batch_size, D)
         self.xs_var = tf.Variable(tf.zeros(shape=xs_flatten_shape, dtype=self.model.x_dtype))
+        self.prev_grad = tf.Variable(tf.zeros(shape=xs_flatten_shape, dtype=self.model.x_dtype))
+
         # variable for labels
         self.ys_var = tf.Variable(tf.zeros(shape=(batch_size,), dtype=self.model.y_dtype))
         # variable for the (hopefully) adversarial example with shape of (batch_size, D)
@@ -66,9 +71,10 @@ class Attacker(BatchAttack):
 
 
 
-        grad = tf.gradients(self.loss, self.xs_adv_var)[0]
+        self.grad = tf.gradients(self.loss, self.xs_adv_var)[0]
+        self.update_prev_grad = self.prev_grad.assign(self.grad)
         # update the adversarial example
-        grad_sign = tf.sign(grad)
+        grad_sign = tf.sign(self.grad)
         # clip by max l_inf magnitude of adversarial noise
 
         xs_adv_next = tf.clip_by_value(self.xs_adv_var + alpha * self.stop_mask * grad_sign, xs_lo, xs_hi)
@@ -85,6 +91,8 @@ class Attacker(BatchAttack):
         self.delta = self.init_delta(batch_size)
         self.setup_xs = [self.xs_var.assign(tf.reshape(self.xs_ph, xs_flatten_shape)),
                          self.xs_adv_var.assign(tf.reshape(self.xs_adv_var_ph, xs_flatten_shape))]
+
+        self.setup_prev_grad = self.prev_grad.assign(tf.reshape(self.prev_grad_ph, xs_flatten_shape))
         self.setup_ys = self.ys_var.assign(self.ys_ph)
         self.iteration = 30
 
@@ -111,11 +119,19 @@ class Attacker(BatchAttack):
     def batch_attack(self, xs, ys=None, ys_target=None):
         self._session.run(self.setup_xs, feed_dict={self.xs_ph: xs, self.xs_adv_var_ph: xs+self.delta})
         self._session.run(self.setup_ys, feed_dict={self.ys_ph: ys})
+        self._session.run(self.setup_prev_grad, feed_dict={self.prev_grad_ph: np.zeros(xs.shape)})
         for i in range(self.iteration):
+            #print("self.prev_grad", self.prev_grad)
+            #print("self.prev_grad", tf.reduce_sum(self.prev_grad).eval(session=self._session))
+
             self._session.run(self.update_xs_adv_step)
 
-            model = self.model
+            #print("self.prev_grad1", self.prev_grad)
+            #print("self.prev_grad1", tf.reduce_sum(self.prev_grad).eval(session=self._session))
 
+            self._session.run(self.update_prev_grad)
+            #print("self.prev_grad2", self.prev_grad)
+            #print("self.prev_grad2", tf.reduce_sum(self.prev_grad).eval(session=self._session))
             # for test
             """
 
@@ -131,5 +147,8 @@ class Attacker(BatchAttack):
 
 
             print(i,"stop_mask", tf.reduce_sum(self.stop_mask).eval(session=self._session))
+            #print("self.grad", self.grad)
+            #print("self.grad", tf.reduce_sum(self.grad).eval(session=self._session))
+
 
         return self._session.run(self.xs_adv_model)
