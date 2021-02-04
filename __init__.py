@@ -5,6 +5,17 @@ from ares.attack.base import BatchAttack
 from ares.attack.utils import get_xs_ph, get_ys_ph, maybe_to_array
 from ares.loss.base import Loss 
 from ares.loss import CrossEntropyLoss
+def gkern(kernlen=21, nsig=3):
+  """Returns a 2D Gaussian kernel array."""
+  import scipy.stats as st
+
+  x = np.linspace(-nsig, nsig, kernlen)
+  kern1d = st.norm.pdf(x)
+  kernel_raw = np.outer(kern1d, kern1d)
+  kernel = kernel_raw / kernel_raw.sum()
+  return kernel
+
+
 
 class MyLoss(Loss):
     def __init__(self, model):
@@ -28,6 +39,16 @@ class Attacker(BatchAttack):
     def __init__(self, model, batch_size, dataset, session):
         ''' Based on ares.attack.bim.BIM '''
         self.model, self.batch_size, self._session = model, batch_size, session
+
+
+        if self.model.x_shape[-1]!=32: # for imagenet
+            kernel = gkern(15, 3).astype(np.float32)
+            stack_kernel = np.stack([kernel, kernel, kernel]).swapaxes(2, 0)
+            stack_kernel = np.expand_dims(stack_kernel, 3)
+        else: #for cifar
+            pass
+
+
         # dataset == "imagenet" or "cifar10"
         #loss = CrossEntropyLoss(self.model)
         loss = MyLoss(self.model)
@@ -72,6 +93,11 @@ class Attacker(BatchAttack):
 
 
         self.grad = tf.gradients(self.loss, self.xs_adv_var)[0]
+        self.grad = tf.nn.depthwise_conv2d(self.grad, stack_kernel, strides=[1, 1, 1, 1], padding='SAME')
+        self.grad = self.grad / tf.reduce_mean(tf.abs(self.grad), [1, 2, 3], keep_dims=True)
+        self.grad = self.grad + self.prev_grad
+
+
         self.update_prev_grad = self.prev_grad.assign(self.grad)
         # update the adversarial example
         grad_sign = tf.sign(self.grad)
