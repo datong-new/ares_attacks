@@ -11,7 +11,7 @@ class MyLoss(Loss):
         self.model = model
 
     def __call__(self, xs, ys):
-        logits = self.model.logits(xs)
+        logits, label = self.model._logits_and_labels(xs)
         loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=ys, logits=logits)
         #print("loss", loss)
 
@@ -19,12 +19,10 @@ class MyLoss(Loss):
         label_score = tf.reduce_sum(mask*logits, axis=1)
         second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
         loss_1 = -(label_score - second_scores)
-        loss_mask = loss_1<0
-        #loss = label_score
 
-        #return -label_score, loss_mask
-        #return loss, loss_mask
-        return loss_1, loss_mask
+        stop_mask = tf.cast(tf.equal(label, ys), dtype=tf.float32)
+
+        return loss_1, stop_mask
 
 class Attacker(BatchAttack):
     def __init__(self, model, batch_size, dataset, session):
@@ -61,9 +59,10 @@ class Attacker(BatchAttack):
 
 
         self.xs_adv_model = tf.reshape(self.xs_adv_var, (batch_size, *self.model.x_shape))
-        self.loss, loss_mask = loss(self.xs_adv_model, self.ys_var)
-        loss_mask = tf.cast(loss_mask, dtype=tf.float32)
-        self.loss_mask = tf.expand_dims(loss_mask, axis=1)
+
+        self.loss, self.stop_mask = loss(self.xs_adv_model, self.ys_var)
+        self.stop_mask = tf.cast(self.stop_mask, dtype=tf.float32)
+        self.stop_mask = tf.expand_dims(self.stop_mask, axis=1)
 
 
 
@@ -72,7 +71,7 @@ class Attacker(BatchAttack):
         grad_sign = tf.sign(grad)
         # clip by max l_inf magnitude of adversarial noise
 
-        xs_adv_next = tf.clip_by_value(self.xs_adv_var + alpha * self.loss_mask * grad_sign, xs_lo, xs_hi)
+        xs_adv_next = tf.clip_by_value(self.xs_adv_var + alpha * self.stop_mask * grad_sign, xs_lo, xs_hi)
         #xs_adv_next = tf.clip_by_value(self.xs_adv_var + alpha * grad_sign, xs_lo, xs_hi)
 
 
@@ -114,6 +113,23 @@ class Attacker(BatchAttack):
         self._session.run(self.setup_ys, feed_dict={self.ys_ph: ys})
         for i in range(self.iteration):
             self._session.run(self.update_xs_adv_step)
-        #    print(i, self.loss.eval(session=self._session))
-            print(i, tf.reduce_sum(self.loss_mask).eval(session=self._session))
+
+            model = self.model
+
+            # for test
+            """
+
+            xs_ph = tf.placeholder(model.x_dtype, shape=(None, *model.x_shape))
+            labels_op = model.labels(xs_ph)
+            xs_adv = self._session.run(self.xs_adv_model)
+            xs_adv = np.clip(xs_adv, xs - self.eps, xs+self.eps)
+            xs_adv = np.clip(xs_adv, model.x_min, model.x_max)
+            assert not np.any(np.isnan(xs_adv))
+            labels = self._session.run(labels_op, feed_dict={xs_ph: xs_adv})
+            print("in score", np.sum(np.logical_not(np.equal(labels, ys))))
+            """
+
+
+            print(i,"stop_mask", tf.reduce_sum(self.stop_mask).eval(session=self._session))
+
         return self._session.run(self.xs_adv_model)
