@@ -93,8 +93,12 @@ class Attacker(BatchAttack):
 
 
         self.grad = tf.gradients(self.loss, self.xs_adv_var)[0]
+
+
+        self.grad = tf.reshape(self.grad, self.xs_ph.shape)
         self.grad = tf.nn.depthwise_conv2d(self.grad, stack_kernel, strides=[1, 1, 1, 1], padding='SAME')
         self.grad = self.grad / tf.reduce_mean(tf.abs(self.grad), [1, 2, 3], keep_dims=True)
+        self.grad = tf.reshape(self.grad, xs_flatten_shape)
         self.grad = self.grad + self.prev_grad
 
 
