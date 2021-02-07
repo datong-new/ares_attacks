@@ -1,4 +1,5 @@
 import numpy as np
+import random
 import tensorflow as tf
 from ares.attack.base import BatchAttack
 from ares.attack.utils import get_xs_ph, get_ys_ph
@@ -70,16 +71,18 @@ class Attacker(BatchAttack):
             self.alpha = self.eps * 2 * np.ones((self.batch_size,))
 #            self.alpha = self.eps /7 * np.ones((self.batch_size,))
 
-    def update_alpha(self, total, loss_inc_num, adv_best, xs_adv, p=0.75):
-        print("loss_inc_num", loss_inc_num)
-        print("total", total)
-        mask = loss_inc_num<(total*p)
-        print("mask", mask)
-        self.alpha = self.alpha * (1-mask) + (self.alpha/2)*mask
-        print("self.alpha", self.alpha)
+    def init_delta(self, batch_size):
+        x = np.zeros(self.model.x_shape)
+        for i in range(x.shape[0]):
+            c = [1,1,1]
+            for j in range(3):
+                if random.uniform(0,1)<0.5: c[j] = -c[j]
+            c = np.array(c)
+            x[i, :, :] += c
+        x = np.ones((batch_size, 1, 1, 1)) * x
 
-        xs_adv = xs_adv * (1-mask)[:, None, None, None] + adv_best*mask[:, None, None, None]
-        return self.alpha, xs_adv
+        return x * self.eps
+
 
 
     def batch_attack(self, xs, ys=None, ys_target=None):
@@ -93,9 +96,11 @@ class Attacker(BatchAttack):
         loss_inc_num = np.zeros((self.batch_size, ))
 
         prev_grad = np.zeros(xs.shape)
-        self.alpha = self.eps * 2 * np.ones((self.batch_size,))
+        self.alpha = self.eps * np.ones((self.batch_size,))
 
         for i in range(self.iteration):
+
+            """
             if i in self.checkpoints:
                 self.alpha, xs_adv=self.update_alpha(total, loss_inc_num, adv_best, xs_adv)
 
@@ -103,6 +108,10 @@ class Attacker(BatchAttack):
                 loss_best = np.zeros((self.batch_size, ))
                 total = 0
                 loss_inc_num = np.zeros((self.batch_size, ))
+            """
+            if i%10==9:
+                print("stop_mask", stop_mask)
+                xs_adv = xs_adv * ((1-stop_mask)[:, None, None, None]) + (xs+self.init_delta(self.batch_size)) * stop_mask[:, None, None, None]
 
             self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
             #grad = self._session.run(self.grad, feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
@@ -112,18 +121,19 @@ class Attacker(BatchAttack):
             print(i, "stop_mask", stop_mask.sum())
 
             #
-            loss_inc_num += loss>loss_prev
-            loss_prev = loss
-            total += 1
+            #loss_inc_num += loss>loss_prev
+            #loss_prev = loss
+            #total += 1
 
             # update loss_best and adv_best
-            mask = loss>loss_best
-            loss_best = loss_best * (1-mask) + loss * mask
-            adv_best = adv_best * (1-mask)[:, None, None, None] + xs_adv * mask[:, None, None, None]
+            #mask = loss>loss_best
+            #loss_best = loss_best * (1-mask) + loss * mask
+            #adv_best = adv_best * (1-mask)[:, None, None, None] + xs_adv * mask[:, None, None, None]
+
             grad = 0.75 * grad + 0.25 * prev_grad
             prev_grad = grad
-
             grad_sign = np.sign(grad)
+
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
         return xs_adv
