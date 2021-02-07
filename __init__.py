@@ -22,8 +22,8 @@ class MyLoss(Loss):
         second = tf.reduce_max(top_scores,  axis=1)
         third = tf.reduce_min(top_scores,  axis=1)
 
-        loss_1 = -(label_score - second) / (label_score - third)
-        #loss_1 = -(label_score - second)
+        #loss_1 = -(label_score - second) / (label_score - third)
+        loss_1 = -(label_score - second)
         #loss_2 = -(label_score - second_scores)
 
         stop_mask = tf.cast(tf.equal(label, ys), dtype=tf.float32)
@@ -49,7 +49,7 @@ class Attacker(BatchAttack):
         self.loss, self.stop_mask = loss(self.xs_var, self.ys_var)
         self.grad = tf.gradients(self.loss, self.xs_var)[0]
 
-        self.iteration = 100
+        self.iteration = 80
 
     def config(self, **kwargs):
         if 'magnitude' in kwargs:
@@ -87,8 +87,8 @@ class Attacker(BatchAttack):
 
         for i in range(self.iteration):
             if i in checkpoints:
-                #xs_adv = xs_adv * (1-stop_mask[:, None, None, None]) + (xs+self.init_delta(self.batch_size)) * (stop_mask[:, None, None, None])
-                xs_adv = adv_best
+                xs_adv = xs_adv * (1-stop_mask[:, None, None, None]) + (xs+self.init_delta(self.batch_size)) * (stop_mask[:, None, None, None])
+                #xs_adv = adv_best
                 self.alpha /= 2
 
             self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
@@ -110,6 +110,7 @@ class Attacker(BatchAttack):
             """
             grad_sign = np.sign(grad)
 
-            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+            #xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+            xs_adv = np.clip(xs_adv + (self.alpha )[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
         return xs_adv
