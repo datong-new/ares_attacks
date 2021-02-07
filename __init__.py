@@ -77,24 +77,30 @@ class Attacker(BatchAttack):
         adv_best = xs_adv
 
         loss_prev = np.zeros((self.batch_size, ))
-        loss_best = np.zeros((self.batch_size, ))
+        loss_best = np.ones((self.batch_size, )) * (-100)
         total = 0
         loss_inc_num = np.zeros((self.batch_size, ))
 
         prev_grad = np.zeros(xs.shape)
         self.alpha = self.eps * np.ones((self.batch_size,))
-
-        checkpoints = set([10, 15, 25, 40, 60, 85, 100])
+        checkpoints = set([10, 25, 45, 70, 100])
 
         for i in range(self.iteration):
             if i in checkpoints:
-                xs_adv = xs_adv * ((1-stop_mask)[:, None, None, None]) + (xs+self.init_delta(self.batch_size)) * stop_mask[:, None, None, None]
+                #xs_adv = xs_adv * (1-stop_mask[:, None, None, None]) + (xs+self.init_delta(self.batch_size)) * (stop_mask[:, None, None, None])
+                xs_adv = adv_best
                 self.alpha /= 2
 
             self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
             grad = self._session.run(self.grad)
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
             loss, stop_mask = self.loss.eval(session=self._session), self.stop_mask.eval(session=self._session)
+
+            mask = loss>loss_best
+            loss_best = loss_best * (1-mask) + loss * mask
+            adv_best = adv_best * (1-mask[:, None, None, None]) + xs_adv * mask[:, None, None, None]
+
+
 #            print(i, "stop_mask", stop_mask.sum())
 
             # MI
