@@ -12,20 +12,18 @@ class MyLoss(Loss):
 
     def __call__(self, xs, ys):
         logits, label = self.model._logits_and_labels(xs)
-        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=ys, logits=logits)
-        #print("loss", loss)
+        #loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=ys, logits=logits)
 
         mask = tf.one_hot(ys, depth=tf.shape(logits)[1])
         label_score = tf.reduce_sum(mask*logits, axis=1)
-        second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
+        #second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
 
         top_scores = tf.math.top_k((1-mask)*logits, 2)[0]
         second = tf.reduce_max(top_scores,  axis=1)
         third = tf.reduce_min(top_scores,  axis=1)
 
-
-        #loss_1 = -(label_score - second) / (label_score - third)
-        loss_1 = -(label_score - second)
+        loss_1 = -(label_score - second) / (label_score - third)
+        #loss_1 = -(label_score - second)
         #loss_2 = -(label_score - second_scores)
 
         stop_mask = tf.cast(tf.equal(label, ys), dtype=tf.float32)
@@ -52,23 +50,11 @@ class Attacker(BatchAttack):
         self.grad = tf.gradients(self.loss, self.xs_var)[0]
 
         self.iteration = 100
-        self.checkpoints = self.init_checkpoints()
-
-    def init_checkpoints(self):
-        prev_k = 0
-        k = 0.22
-        checkpoints = set()
-        while k<1:
-            checkpoints.add(int(k*self.iteration))
-            next_k = k+max(k-prev_k-0.03, 0.06)
-            prev_k = k
-            k = next_k
-        return checkpoints
 
     def config(self, **kwargs):
         if 'magnitude' in kwargs:
             self.eps = kwargs['magnitude'] - 1e-6
-            self.alpha = self.eps * 2 * np.ones((self.batch_size,))
+            self.alpha = self.eps *2 * np.ones((self.batch_size,))
 #            self.alpha = self.eps /7 * np.ones((self.batch_size,))
 
     def init_delta(self, batch_size):
@@ -98,40 +84,24 @@ class Attacker(BatchAttack):
         prev_grad = np.zeros(xs.shape)
         self.alpha = self.eps * np.ones((self.batch_size,))
 
+        checkpoints = set([10, 15, 25, 40, 60, 85, 100])
+
         for i in range(self.iteration):
-
-            """
-            if i in self.checkpoints:
-                self.alpha, xs_adv=self.update_alpha(total, loss_inc_num, adv_best, xs_adv)
-
-                adv_best = xs_adv
-                loss_best = np.zeros((self.batch_size, ))
-                total = 0
-                loss_inc_num = np.zeros((self.batch_size, ))
-            """
-            if i%10==9:
-                print("stop_mask", stop_mask)
+            if i in checkpoints:
                 xs_adv = xs_adv * ((1-stop_mask)[:, None, None, None]) + (xs+self.init_delta(self.batch_size)) * stop_mask[:, None, None, None]
+                self.alpha /= 2
 
             self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
-            #grad = self._session.run(self.grad, feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
             grad = self._session.run(self.grad)
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
             loss, stop_mask = self.loss.eval(session=self._session), self.stop_mask.eval(session=self._session)
-            print(i, "stop_mask", stop_mask.sum())
+#            print(i, "stop_mask", stop_mask.sum())
 
-            #
-            #loss_inc_num += loss>loss_prev
-            #loss_prev = loss
-            #total += 1
-
-            # update loss_best and adv_best
-            #mask = loss>loss_best
-            #loss_best = loss_best * (1-mask) + loss * mask
-            #adv_best = adv_best * (1-mask)[:, None, None, None] + xs_adv * mask[:, None, None, None]
-
+            # MI
+            """
             grad = 0.75 * grad + 0.25 * prev_grad
             prev_grad = grad
+            """
             grad_sign = np.sign(grad)
 
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
