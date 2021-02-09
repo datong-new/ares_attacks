@@ -82,7 +82,7 @@ class Attacker(BatchAttack):
         loss_inc_num = np.zeros((self.batch_size, ))
 
         prev_grad = np.zeros(xs.shape)
-        self.alpha = self.eps * np.ones((self.batch_size,))
+        self.alpha = self.eps/7 * np.ones((self.batch_size,))
         checkpoints = set([10, 25, 45, 70, 100])
         count = 0
 
@@ -94,7 +94,7 @@ class Attacker(BatchAttack):
                 #xs_adv = adv_best
 
                 ## warmup
-                lr = self.eps/14
+                lr = self.eps/30
                 for _ in range(5):
                     count += 1
                     self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
