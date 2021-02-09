@@ -22,8 +22,8 @@ class MyLoss(Loss):
         second = tf.reduce_max(top_scores,  axis=1)
         third = tf.reduce_min(top_scores,  axis=1)
 
-        #loss_1 = -(label_score - second) / (label_score - third)
-        loss_1 = -(label_score - second)
+        loss_1 = -(label_score - second) / (label_score - third)
+        #loss_1 = -(label_score - second)
         #loss_2 = -(label_score - second_scores)
 
         stop_mask = tf.cast(tf.equal(label, ys), dtype=tf.float32)
@@ -101,7 +101,7 @@ class Attacker(BatchAttack):
             adv_best = adv_best * (1-mask[:, None, None, None]) + xs_adv * mask[:, None, None, None]
 
 
-#            print(i, "stop_mask", stop_mask.sum())
+            print(i, "stop_mask", stop_mask.sum())
 
             # MI
             """
@@ -110,7 +110,7 @@ class Attacker(BatchAttack):
             """
             grad_sign = np.sign(grad)
 
-            #xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
-            xs_adv = np.clip(xs_adv + (self.alpha )[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+#            xs_adv = np.clip(xs_adv + (self.alpha )[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
         return xs_adv
