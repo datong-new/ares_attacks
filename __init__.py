@@ -22,8 +22,8 @@ class MyLoss(Loss):
         second = tf.reduce_max(top_scores,  axis=1)
         third = tf.reduce_min(top_scores,  axis=1)
 
-        loss_1 = -(label_score - second) / (label_score - third)
-        #loss_1 = -(label_score - second)
+#        loss_1 = -(label_score - second) / (label_score - third)
+        loss_1 = -(label_score - second)
         #loss_2 = -(label_score - second_scores)
 
         stop_mask = tf.cast(tf.equal(label, ys), dtype=tf.float32)
