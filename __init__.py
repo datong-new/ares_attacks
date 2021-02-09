@@ -54,8 +54,8 @@ class Attacker(BatchAttack):
     def config(self, **kwargs):
         if 'magnitude' in kwargs:
             self.eps = kwargs['magnitude'] - 1e-6
-            self.alpha = self.eps *2 * np.ones((self.batch_size,))
-#            self.alpha = self.eps /7 * np.ones((self.batch_size,))
+#            self.alpha = self.eps *2 * np.ones((self.batch_size,))
+            self.alpha = self.eps /7 * np.ones((self.batch_size,))
 
     def init_delta(self, batch_size):
         x = np.zeros(self.model.x_shape)
@@ -84,12 +84,29 @@ class Attacker(BatchAttack):
         prev_grad = np.zeros(xs.shape)
         self.alpha = self.eps * np.ones((self.batch_size,))
         checkpoints = set([10, 25, 45, 70, 100])
+        count = 0
 
         for i in range(self.iteration):
+            if count>60: break
+
             if i in checkpoints:
                 xs_adv = xs_adv * (1-stop_mask[:, None, None, None]) + (xs+self.init_delta(self.batch_size)) * (stop_mask[:, None, None, None])
                 #xs_adv = adv_best
-                self.alpha /= 2
+
+                ## warmup
+                lr = self.eps/14
+                for _ in range(5):
+                    count += 1
+                    self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
+                    grad = self._session.run(self.grad)
+                    grad = grad.reshape(self.batch_size, *self.model.x_shape)
+                    loss, stop_mask = self.loss.eval(session=self._session), self.stop_mask.eval(session=self._session)
+                    grad_sign = np.sign(grad)
+
+                    xs_adv = np.clip(xs_adv + (lr * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+                    xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
+
+            count += 1
 
             self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
             grad = self._session.run(self.grad)
@@ -101,7 +118,7 @@ class Attacker(BatchAttack):
             adv_best = adv_best * (1-mask[:, None, None, None]) + xs_adv * mask[:, None, None, None]
 
 
-            print(i, "stop_mask", stop_mask.sum())
+            print(count, "stop_mask", stop_mask.sum())
 
             # MI
             """
@@ -111,6 +128,5 @@ class Attacker(BatchAttack):
             grad_sign = np.sign(grad)
 
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
-#            xs_adv = np.clip(xs_adv + (self.alpha )[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
         return xs_adv
