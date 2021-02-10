@@ -54,28 +54,29 @@ class Attacker(BatchAttack):
         xs_adv = xs
 
         prev_grad = np.zeros(xs.shape)
-        self.alpha = self.eps/7 
 
 
         for i in range(self.iteration):
-            if i%20==18 or i%20==19:
+            if i%30==28 or i%30==29:
                 xs_adv = xs_adv * (1-stop_mask[:, None, None, None]) + (xs+self.init_delta()) * (stop_mask[:, None, None, None])
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_ods)
                 loss, stop_mask = self.loss_ods, self.stop_mask_ods
+                prev_grad = np.zeros(xs.shape)
+                self.alpha = self.eps
             else: 
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_ce)
                 loss, stop_mask = self.loss_ce, self.stop_mask_ce
+                self.alpha = self.eps/7 
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
             loss, stop_mask = loss.eval(session=self._session), stop_mask.eval(session=self._session)
             print(i, "stop_mask", stop_mask.sum())
             # MI
-            """
             grad = 0.75 * grad + 0.25 * prev_grad
             prev_grad = grad
-            """
+
             grad_sign = np.sign(grad)
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
