@@ -42,25 +42,32 @@ class Attacker(BatchAttack):
     def _get_gradients(self, loss_type="ce"):
         logits, label = self.model._logits_and_labels(self.xs_var)
 
-#        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
+        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
 
  #       loss += tf.reduce_sum((2*tf.random.uniform(logits.shape)-1)*logits, axis=-1)
 
         mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
         label_score = tf.reduce_sum(mask*logits, axis=1)
         second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
-  #      loss += -(label_score - second_scores)
+        loss += -(label_score - second_scores)
         mean = (label_score+second_scores)/2
 
         L = label_score - second_scores
-        mean_1 = label_score - 1/5 * L
-        mean_2 = second_scores + 1/5 * L
-
         c=10
 
-        #loss = 1 / (1+tf.exp(-c*(label_score-mean))) + 1 / (1+tf.exp(-c*(mean-second_scores)))
-        loss = 1 / (1+tf.exp(-c*(label_score-mean_1))) + 1 / (1+tf.exp(-c*(mean_2-second_scores)))
-        loss = - loss
+        """
+        for i in range(2, 20, 2):
+            mean_1 = label_score -  L / float(i)
+            mean_2 = second_scores + L /float(i)
+
+            loss -= 1 / (1+tf.exp(-c*(label_score-mean_1))) + 1 / (1+tf.exp(-c*(mean_2-second_scores)))
+        """
+
+        mean_1 = label_score -  L / 5.0
+        mean_2 = second_scores + L / 5.0
+
+        loss -= 1 / (1+tf.exp(-c*(label_score-mean_1))) + 1 / (1+tf.exp(-c*(mean_2-second_scores)))
+        loss -= 1 / (1+tf.exp(-c*(label_score-mean))) + 1 / (1+tf.exp(-c*(mean-second_scores)))
 
 
         grad = tf.gradients(loss, self.xs_var)[0]
@@ -114,11 +121,11 @@ class Attacker(BatchAttack):
             grad = 0.75 * grad + 0.25 * prev_grad
             prev_grad = grad
 
+            """
             m_ = m
             m = 0.9*m + 0.1* grad
             v = 0.99*v + 0.01 * (grad**2)
             grad = m / (np.sqrt(v)+1e-8)
-            """
             prev_grad = grad
 
             grad_sign = np.sign(grad)
