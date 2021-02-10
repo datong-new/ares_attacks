@@ -26,6 +26,8 @@ class Attacker(BatchAttack):
         self.grad_ce, self.loss_ce, self.stop_mask_ce = self._get_gradients(loss_type="ce")
         self.grad_cw, self.loss_cw, self.stop_mask_cw = self._get_gradients(loss_type="cw")
 
+        self.grad, self.loss, self.stop_mask = self._get_gradients(loss_type="cw")
+
         self.iteration = 80
 
     def config(self, **kwargs):
@@ -39,15 +41,15 @@ class Attacker(BatchAttack):
 
     def _get_gradients(self, loss_type="ce"):
         logits, label = self.model._logits_and_labels(self.xs_var)
-        if loss_type=='ce':
-            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
-        elif loss_type=='ods':
-            loss = tf.reduce_sum((2*logits*tf.random.uniform(logits.shape)-1), axis=-1)
-        elif loss_type=='cw':
-            mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
-            label_score = tf.reduce_sum(mask*logits, axis=1)
-            second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
-            loss = -(label_score - second_scores)
+
+        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
+
+        loss += tf.reduce_sum((2*logits*tf.random.uniform(logits.shape)-1), axis=-1)
+
+        mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
+        label_score = tf.reduce_sum(mask*logits, axis=1)
+        second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
+        loss += -(label_score - second_scores)
 
         grad = tf.gradients(loss, self.xs_var)[0]
         stop_mask = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32)
@@ -65,6 +67,8 @@ class Attacker(BatchAttack):
         stop_mask = None
 
         for i in range(self.iteration):
+
+            """
             if i%20==0 or i%20==1:
                 osd_flag = True
                 #if stop_mask is not None:
@@ -82,6 +86,12 @@ class Attacker(BatchAttack):
                 #grad = self._session.run(self.grad_ce)
                 grad = self._session.run(self.grad_cw)
                 loss, stop_mask = self.loss_ce, self.stop_mask_ce
+            """
+
+            self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
+
+            grad = self._session.run(self.grad)
+            loss, stop_mask = self.loss, self.stop_mask
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
             loss, stop_mask = loss.eval(session=self._session), stop_mask.eval(session=self._session)
@@ -91,15 +101,13 @@ class Attacker(BatchAttack):
             """
             grad = 0.75 * grad + 0.25 * prev_grad
             prev_grad = grad
+
+            m_ = m
+            m = 0.9*m + 0.1* grad
+            v = 0.99*v + 0.01 * (grad**2)
+            grad = m / (np.sqrt(v)+1e-8)
             """
-            if not osd_flag:
-                """
-                m_ = m
-                m = 0.9*m + 0.1* grad
-                v = 0.99*v + 0.01 * (grad**2)
-                grad = m / (np.sqrt(v)+1e-8)
-                """
-                prev_grad = grad
+            prev_grad = grad
 
             grad_sign = np.sign(grad)
             #grad_sign = grad / grad.mean(axis=(1,2,3))[:, None, None, None]
