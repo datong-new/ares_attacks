@@ -33,7 +33,7 @@ class Attacker(BatchAttack):
     def config(self, **kwargs):
         if 'magnitude' in kwargs:
             self.eps = kwargs['magnitude'] - 1e-6
-            self.alpha = self.eps /7 
+            self.alpha = self.eps / 7
 
 
     def init_delta(self):
@@ -42,14 +42,26 @@ class Attacker(BatchAttack):
     def _get_gradients(self, loss_type="ce"):
         logits, label = self.model._logits_and_labels(self.xs_var)
 
-        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
+#        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
 
-        loss += tf.reduce_sum((2*logits*tf.random.uniform(logits.shape)-1), axis=-1)
+ #       loss += tf.reduce_sum((2*tf.random.uniform(logits.shape)-1)*logits, axis=-1)
 
         mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
         label_score = tf.reduce_sum(mask*logits, axis=1)
         second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
-        loss += -(label_score - second_scores)
+  #      loss += -(label_score - second_scores)
+        mean = (label_score+second_scores)/2
+
+        L = label_score - second_scores
+        mean_1 = label_score - 1/5 * L
+        mean_2 = second_scores + 1/5 * L
+
+        c=10
+
+        #loss = 1 / (1+tf.exp(-c*(label_score-mean))) + 1 / (1+tf.exp(-c*(mean-second_scores)))
+        loss = 1 / (1+tf.exp(-c*(label_score-mean_1))) + 1 / (1+tf.exp(-c*(mean_2-second_scores)))
+        loss = - loss
+
 
         grad = tf.gradients(loss, self.xs_var)[0]
         stop_mask = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32)
@@ -110,6 +122,7 @@ class Attacker(BatchAttack):
             prev_grad = grad
 
             grad_sign = np.sign(grad)
+
             #grad_sign = grad / grad.mean(axis=(1,2,3))[:, None, None, None]
 #            print("grad mean:{}, grad.max:{}, grad.min:{}, grad.abs.mean:{}, grad.std:{}, grad.abs.std:{}".format(grad.mean(), grad.max(), grad.min(), np.abs(grad).mean(), grad.std(), np.abs(grad).std()))
 
