@@ -44,16 +44,23 @@ class Attacker(BatchAttack):
 
         loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
 
+
+
  #       loss += tf.reduce_sum((2*tf.random.uniform(logits.shape)-1)*logits, axis=-1)
 
         mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
         label_score = tf.reduce_sum(mask*logits, axis=1)
         second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
         loss += -(label_score - second_scores)
+
+        logits = logits / (tf.reduce_max(logits, axis=1)-tf.reduce_min(logits, axis=1))[:,None]
+        label_score = tf.reduce_sum(mask*logits, axis=1)
+        second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
         mean = (label_score+second_scores)/2
 
+
         L = label_score - second_scores
-        c=1
+        c=10
 
         """
         for i in range(2, 20, 2):
@@ -85,6 +92,9 @@ class Attacker(BatchAttack):
         v = np.zeros(xs.shape)
         stop_mask = None
 
+        self.alpha = np.ones(xs.shape) * self.eps / 2 
+        prev_grad = None
+
         for i in range(self.iteration):
 
             """
@@ -114,25 +124,28 @@ class Attacker(BatchAttack):
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
             loss, stop_mask = loss.eval(session=self._session), stop_mask.eval(session=self._session)
-            #print(i, "stop_mask", stop_mask.sum())
+            print(i, "stop_mask", stop_mask.sum())
 
             # MI
             """
             grad = 0.75 * grad + 0.25 * prev_grad
             prev_grad = grad
-
-            """
             m_ = m
             m = 0.9*m + 0.1* grad
             v = 0.99*v + 0.01 * (grad**2)
             grad = m / (np.sqrt(v)+1e-8)
             prev_grad = grad
+            """
+            if prev_grad is not None:
+                tmp = np.sign(grad) * np.sign(prev_grad) # decay alpha if grad and prev_grad different
+                self.alpha = self.alpha * (1/4*tmp+3/4)
+                self.alpha = np.clip(self.alpha, self.eps, self.eps/64)
 
             grad_sign = np.sign(grad)
 
             #grad_sign = grad / grad.mean(axis=(1,2,3))[:, None, None, None]
 #            print("grad mean:{}, grad.max:{}, grad.min:{}, grad.abs.mean:{}, grad.std:{}, grad.abs.std:{}".format(grad.mean(), grad.max(), grad.min(), np.abs(grad).mean(), grad.std(), np.abs(grad).std()))
 
-            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+            xs_adv = np.clip(xs_adv +  stop_mask[:, None, None, None] * self.alpha * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
         return xs_adv
