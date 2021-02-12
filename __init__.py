@@ -53,7 +53,7 @@ class Attacker(BatchAttack):
         mean = (label_score+second_scores)/2
 
         L = label_score - second_scores
-        c=10
+        c=1
 
         """
         for i in range(2, 20, 2):
@@ -67,7 +67,7 @@ class Attacker(BatchAttack):
         mean_2 = second_scores + L / 5.0
 
         loss -= 1 / (1+tf.exp(-c*(label_score-mean_1))) + 1 / (1+tf.exp(-c*(mean_2-second_scores)))
-        loss -= 1 / (1+tf.exp(-c*(label_score-mean))) + 1 / (1+tf.exp(-c*(mean-second_scores)))
+#        loss -= 1 / (1+tf.exp(-c*(label_score-mean))) + 1 / (1+tf.exp(-c*(mean-second_scores)))
 
 
         grad = tf.gradients(loss, self.xs_var)[0]
@@ -114,7 +114,7 @@ class Attacker(BatchAttack):
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
             loss, stop_mask = loss.eval(session=self._session), stop_mask.eval(session=self._session)
-            print(i, "stop_mask", stop_mask.sum())
+            #print(i, "stop_mask", stop_mask.sum())
 
             # MI
             """
