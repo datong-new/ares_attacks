@@ -104,8 +104,8 @@ class Attacker(BatchAttack):
             if i%80<3:
                 if i%80==0:
                     self._session.run(self.setup_tf_w, feed_dict={self.tf_w_ph: 2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
-                if stop_mask is not None:
-                    xs_adv = xs_adv * (1-stop_mask[:, None, None, None]) + (xs+self.init_delta()) * (stop_mask[:, None, None, None])
+                    if stop_mask is not None:
+                        xs_adv = xs_adv * (1-stop_mask[:, None, None, None]) + (xs+self.init_delta()) * (stop_mask[:, None, None, None])
 
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_ods)
