@@ -101,8 +101,7 @@ class Attacker(BatchAttack):
         xs_adv = xs + self.perturbations[None, :, :, :] 
         for i in range(self.iteration):
             #if i%20==0 or i%20==1:
-            #if i%80<3:
-            if False:
+            if i%80<3:
                 if i%80==0:
                     self._session.run(self.setup_tf_w, feed_dict={self.tf_w_ph: 2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
                 if stop_mask is not None:
@@ -115,7 +114,7 @@ class Attacker(BatchAttack):
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_cw)
                 #grad = self._session.run(self.grad_ce)
-                loss, stop_mask = self.loss_ce, self.stop_mask_ce
+                loss, stop_mask = self.loss_cw, self.stop_mask_cw
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
             loss, stop_mask = loss.eval(session=self._session), stop_mask.eval(session=self._session)
