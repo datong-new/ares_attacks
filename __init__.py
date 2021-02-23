@@ -83,7 +83,7 @@ class Attacker(BatchAttack):
                 osd_flag = False
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_cw)
-                loss, stop_mask = self.loss_ce, self.stop_mask_ce
+                loss, stop_mask = self.loss_cw, self.stop_mask_cw
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
             loss, stop_mask = loss.eval(session=self._session), stop_mask.eval(session=self._session)
