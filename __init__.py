@@ -61,6 +61,7 @@ class Attacker(BatchAttack):
         elif loss_type=='ods':
             loss = tf.reduce_sum(logits*self.tf_w, axis=-1)
         elif loss_type=='cw':
+            logits *= 10
             mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
             label_score = tf.reduce_sum(mask*logits, axis=1)
             second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
@@ -68,8 +69,6 @@ class Attacker(BatchAttack):
 
             # ce
             loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
-
-            # thresh
 
 
         grad = tf.gradients(loss, self.xs_var)[0]
