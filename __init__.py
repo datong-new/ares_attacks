@@ -66,7 +66,11 @@ class Attacker(BatchAttack):
             second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
             loss = -(label_score - second_scores)
 
+            # ce
             loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
+
+            # thresh
+
 
         grad = tf.gradients(loss, self.xs_var)[0]
         stop_mask = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32)
