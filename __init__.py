@@ -18,10 +18,17 @@ class Attacker(BatchAttack):
         self.ys_ph = get_ys_ph(model, batch_size)
         self.xs_var = tf.Variable(tf.zeros(self.xs_ph.shape, dtype=self.model.x_dtype))
         self.ys_var = tf.Variable(tf.zeros(shape=(batch_size,), dtype=self.model.y_dtype))
-        self.setup = [self.xs_var.assign(self.xs_ph),self.ys_var.assign(self.ys_ph)]
+        if dataset=="imagenet": 
+            self.num_classes=1000
+        else:
+            self.num_classes=10
 
-        #self.loss, self.stop_mask = loss(self.xs_var, self.ys_var)
-        #self.grad = tf.gradients(self.loss, self.xs_var)[0]
+        self.tf_w_ph = tf.placeholder(self.model.x_dtype, (batch_size, self.num_classes))
+        self.tf_w = tf.Variable(tf.zeros(shape=(batch_size, self.num_classes), dtype=self.model.x_dtype))
+
+        self.setup = [self.xs_var.assign(self.xs_ph),self.ys_var.assign(self.ys_ph)]
+        self.setup_tf_w = self.tf_w.assign(self.tf_w_ph)
+
         self.grad_ods, self.loss_ods, self.stop_mask_ods = self._get_gradients(loss_type="ods")
         self.grad_ce, self.loss_ce, self.stop_mask_ce = self._get_gradients(loss_type="ce")
         self.grad_cw, self.loss_cw, self.stop_mask_cw = self._get_gradients(loss_type="cw")
@@ -33,7 +40,6 @@ class Attacker(BatchAttack):
             self.eps = kwargs['magnitude'] - 1e-6
             self.alpha = self.eps /7 
 
-
     def init_delta(self):
         return (2*np.random.uniform(size=self.xs_ph.shape)-1) * self.eps
 
@@ -42,7 +48,7 @@ class Attacker(BatchAttack):
         if loss_type=='ce':
             loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
         elif loss_type=='ods':
-            loss = tf.reduce_sum((2*logits*tf.random.uniform(logits.shape)-1), axis=-1)
+            loss = tf.reduce_sum(logits*self.tf_w, axis=-1)
         elif loss_type=='cw':
             mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
             label_score = tf.reduce_sum(mask*logits, axis=1)
@@ -60,26 +66,18 @@ class Attacker(BatchAttack):
         xs_adv = xs
 
         prev_grad = np.zeros(xs.shape)
-        m = np.zeros(xs.shape)
-        v = np.zeros(xs.shape)
         stop_mask = None
 
         for i in range(self.iteration):
             if i%20==0 or i%20==1:
-                osd_flag = True
-                #if stop_mask is not None:
-                #    xs_adv = xs_adv * (1-stop_mask[:, None, None, None]) + (xs+self.init_delta()) * (stop_mask[:, None, None, None])
+                if i%20==0:
+                    self._session.run(self.setup_tf_w, feed_dict={self.tf_w_ph: 2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_ods)
                 loss, stop_mask = self.loss_ods, self.stop_mask_ods
-                prev_grad = np.zeros(xs.shape)
-                m = np.zeros(xs.shape)
-                v = np.zeros(xs.shape)
-
             else: 
                 osd_flag = False
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
-                #grad = self._session.run(self.grad_ce)
                 grad = self._session.run(self.grad_cw)
                 loss, stop_mask = self.loss_ce, self.stop_mask_ce
 
@@ -92,19 +90,8 @@ class Attacker(BatchAttack):
             grad = 0.75 * grad + 0.25 * prev_grad
             prev_grad = grad
             """
-            if not osd_flag:
-                """
-                m_ = m
-                m = 0.9*m + 0.1* grad
-                v = 0.99*v + 0.01 * (grad**2)
-                grad = m / (np.sqrt(v)+1e-8)
-                """
-                prev_grad = grad
 
             grad_sign = np.sign(grad)
-            #grad_sign = grad / grad.mean(axis=(1,2,3))[:, None, None, None]
-#            print("grad mean:{}, grad.max:{}, grad.min:{}, grad.abs.mean:{}, grad.std:{}, grad.abs.std:{}".format(grad.mean(), grad.max(), grad.min(), np.abs(grad).mean(), grad.std(), np.abs(grad).std()))
-
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
         return xs_adv
