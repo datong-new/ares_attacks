@@ -79,6 +79,7 @@ class Attacker(BatchAttack):
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_ods)
                 loss, stop_mask = self.loss_ods, self.stop_mask_ods
+                prev_grad = 0
             else: 
                 osd_flag = False
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
@@ -90,10 +91,8 @@ class Attacker(BatchAttack):
             print(i, "stop_mask", stop_mask.sum())
 
             # MI
-            """
             grad = 0.75 * grad + 0.25 * prev_grad
             prev_grad = grad
-            """
 
             grad_sign = np.sign(grad)
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
