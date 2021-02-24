@@ -61,15 +61,13 @@ class Attacker(BatchAttack):
         elif loss_type=='ods':
             loss = tf.reduce_sum(logits*self.tf_w, axis=-1)
         elif loss_type=='cw':
-            logits *= 10
             mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
             label_score = tf.reduce_sum(mask*logits, axis=1)
-            second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
+            second_scores = tf.reduce_max((1- mask) * logits - 1e4*mask,  axis=1)
             loss = -(label_score - second_scores)
 
             # ce
             loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
-
 
         grad = tf.gradients(loss, self.xs_var)[0]
         stop_mask = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32)
@@ -101,7 +99,8 @@ class Attacker(BatchAttack):
             self.perturbations = self.perturbations+np.sign(grad)
             self.perturbations = np.clip(self.perturbations, -self.eps, self.eps)
 
-        xs_adv = xs + self.perturbations[None, :, :, :] 
+        xs = xs + self.perturbations[None, :, :, :] 
+        xs_adv = xs
         for i in range(self.iteration):
             #if i%20==0 or i%20==1:
             if i%80<3:
@@ -113,6 +112,7 @@ class Attacker(BatchAttack):
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_ods)
                 loss, stop_mask = self.loss_ods, self.stop_mask_ods
+                prev_grad = 0
             else: 
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_cw)
@@ -124,10 +124,8 @@ class Attacker(BatchAttack):
             print(i, "stop_mask", stop_mask.sum())
 
             # MI
-            """
             grad = 0.75 * grad + 0.25 * prev_grad
             prev_grad = grad
-            """
 
             grad_sign = np.sign(grad)
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
