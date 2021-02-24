@@ -26,6 +26,10 @@ class Attacker(BatchAttack):
         self.tf_w_ph = tf.placeholder(self.model.x_dtype, (batch_size, self.num_classes))
         self.tf_w = tf.Variable(tf.zeros(shape=(batch_size, self.num_classes), dtype=self.model.x_dtype))
 
+        self.thresh_ph = tf.placeholder(self.model.x_dtype, (1,))
+        self.thresh = tf.Variable(tf.zeros(shape=(1,), dtype=self.model.x_dtype))
+        self.setup_thresh = self.thresh.assign(self.thresh_ph)
+
         self.setup = [self.xs_var.assign(self.xs_ph),self.ys_var.assign(self.ys_ph)]
         self.setup_tf_w = self.tf_w.assign(self.tf_w_ph)
 
@@ -55,6 +59,14 @@ class Attacker(BatchAttack):
             second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
             loss = -(label_score - second_scores)
 
+
+            logits = tf.nn.softmax(logits, axis=-1)
+            label_score = tf.reduce_sum(mask*logits, axis=1)
+            second_scores = tf.reduce_max((1- mask) * logits,  axis=1)
+            c=100
+            thresh_loss = 1/(1+tf.exp(c*(label_score-(1-self.thresh)))) + 1/(1+tf.exp(c*(self.thresh-second_scores)))
+            loss+= thresh_loss
+
         grad = tf.gradients(loss, self.xs_var)[0]
         stop_mask = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32)
         return grad, loss, stop_mask
@@ -70,17 +82,22 @@ class Attacker(BatchAttack):
 
         for i in range(self.iteration):
             #if i%20==0 or i%20==1:
-            if i%25<3:
-                if i%25==0:
+            if i%80<3:
+                if i%80==0:
                     self._session.run(self.setup_tf_w, feed_dict={self.tf_w_ph: 2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
                     if stop_mask is not None:
                         xs_adv = xs_adv * (1-stop_mask[:, None, None, None]) + (xs+self.init_delta()) * (stop_mask[:, None, None, None])
+                    thresh = np.array([0.2])
+                    self._session.run(self.setup_thresh, feed_dict={self.thresh_ph:thresh})
 
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_ods)
                 loss, stop_mask = self.loss_ods, self.stop_mask_ods
                 prev_grad = 0
             else: 
+                if i%10==0 and thresh[0]<0.6: 
+                    thresh += 0.1 
+                    self._session.run(self.setup_thresh, feed_dict={self.thresh_ph:thresh})
                 osd_flag = False
                 self._session.run(self.setup,  feed_dict={self.xs_ph: xs_adv, self.ys_ph: ys})
                 grad = self._session.run(self.grad_cw)
