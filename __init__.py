@@ -22,6 +22,9 @@ class Attacker(BatchAttack):
             self.num_classes=1000
         else:
             self.num_classes=10
+        self.nature_logits_, _ = self.model._logits_and_labels(self.xs_var)
+        self.nature_logits = tf.Variable(tf.zeros(shape=self.nature_logits_.shape, dtype=self.model.x_dtype))
+        self.nature_logits_setup = self.nature_logits.assign(self.nature_logits_)
 
 
         self.universal_perturbation_ph = tf.placeholder(self.model.x_dtype, self.xs_ph.shape[1:])
@@ -37,6 +40,7 @@ class Attacker(BatchAttack):
 
         self.setup = [self.xs_var.assign(self.xs_ph),self.ys_var.assign(self.ys_ph)]
         self.setup_tf_w = self.tf_w.assign(self.tf_w_ph)
+
 
         self.grad_ods, self.loss_ods, self.stop_mask_ods = self._get_gradients(loss_type="ods")
         self.grad_ce, self.loss_ce, self.stop_mask_ce = self._get_gradients(loss_type="ce")
@@ -69,24 +73,47 @@ class Attacker(BatchAttack):
             # ce
             loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
 
+            #kl loss
+            log_nature_logits=tf.nn.log_softmax(self.nature_logits, axis=-1)
+            log_logits=tf.nn.log_softmax(logits, axis=-1)
+
+            exp_nature_logits=tf.exp(log_nature_logits)
+            neg_ent=neg_ent = tf.reduce_sum(exp_nature_logits* log_nature_logits, axis=-1)
+            neg_cross_ent = tf.reduce_sum(exp_nature_logits * log_logits, axis=-1)
+            kl_loss = neg_ent - neg_cross_ent
+            loss += kl_loss
+
         grad = tf.gradients(loss, self.xs_var)[0]
         stop_mask = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32)
         return grad, loss, stop_mask
 
     def _get_gradient_universal_perturbation(self):
         logits, label = self.model._logits_and_labels(self.xs_var+self.universal_perturbation[None, :,:,:])
-        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
+        #loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
+        #kl loss
+        log_nature_logits=tf.nn.log_softmax(self.nature_logits, axis=-1)
+        log_logits=tf.nn.log_softmax(logits, axis=-1)
+
+        exp_nature_logits=tf.exp(log_nature_logits)
+        neg_ent=neg_ent = tf.reduce_sum(exp_nature_logits* log_nature_logits, axis=-1)
+        neg_cross_ent = tf.reduce_sum(exp_nature_logits * log_logits, axis=-1)
+        kl_loss = neg_ent - neg_cross_ent
+        loss = kl_loss
+        #kl_loss = tf.reduce_sum(tf.multiply(log_nature_logits, tf.log(tf.div(log_nature_logits, log_logits))))
+
+
         grad = tf.gradients(loss, self.universal_perturbation)[0]
         return grad
-
-
-
 
     def batch_attack(self, xs, ys=None, ys_target=None):
         xs_lo, xs_hi = xs - self.eps, xs + self.eps
 
         prev_grad = np.zeros(xs.shape)
         stop_mask = None
+
+        self._session.run(self.setup,  feed_dict={self.xs_ph: xs, self.ys_ph: ys})
+        self._session.run(self.nature_logits_setup)
+
 
         if self.perturbations is None:
             print("self.perturbations is None")
@@ -96,7 +123,7 @@ class Attacker(BatchAttack):
             self._session.run(self.setup_universal_perturbation,  feed_dict={self.xs_ph: xs, self.ys_ph: ys,
                 self.universal_perturbation_ph:self.perturbations})
             grad = self._session.run(self.grad_perturbation)
-            self.perturbations = self.perturbations+np.sign(grad)
+            self.perturbations = self.perturbations+np.sign(grad)*self.alpha
             self.perturbations = np.clip(self.perturbations, -self.eps, self.eps)
 
         xs = xs + self.perturbations[None, :, :, :] 
@@ -122,6 +149,7 @@ class Attacker(BatchAttack):
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
             loss, stop_mask = loss.eval(session=self._session), stop_mask.eval(session=self._session)
             print(i, "stop_mask", stop_mask.sum())
+            print("self.nature_logits", tf.reduce_sum(self.nature_logits).eval(session=self._session))
 
             # MI
             grad = 0.75 * grad + 0.25 * prev_grad
