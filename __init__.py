@@ -74,7 +74,7 @@ class Attacker(BatchAttack):
             if i%30==0 or i%30==10: prev_grad=0
             if i%30<10:
                 self.alpha = self.eps / 2
-                if i<10:
+                if i%30<3: # do ods first
                     grad, loss, stop_mask, logits  = self._session.run(
                         (self.grad_kl, self.loss_ods, self.stop_mask_ods, self.logits_ods), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
