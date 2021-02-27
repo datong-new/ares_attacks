@@ -19,13 +19,14 @@ class Attacker(BatchAttack):
         self.xs_var = get_xs_ph(model, batch_size)
         self.ys_var = get_ys_ph(model, batch_size)
         self.visited_logits = tf.placeholder(self.model.x_dtype, [batch_size, None, self.num_classes])
+        self.tf_w = tf.placeholder(self.model.x_dtype, [batch_size, self.num_classes])
 
-        #self.grad_ods, self.loss_ods, self.stop_mask_ods, self.logits_ods = self._get_gradients(loss_type="ods")
+        self.grad_ods, self.loss_ods, self.stop_mask_ods, self.logits_ods = self._get_gradients(loss_type="ods")
         self.grad_ce, self.loss_ce, self.stop_mask_ce, self.logits_ce = self._get_gradients(loss_type="ce")
         self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw = self._get_gradients(loss_type="cw")
         self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl = self._get_gradients(loss_type="kl")
 
-        self.iteration = 80
+        self.iteration = 100
 
     def init_delta(self):
         return (2*np.random.uniform(size=self.xs_ph.shape)-1) * self.eps
@@ -34,9 +35,8 @@ class Attacker(BatchAttack):
         logits, label = self.model._logits_and_labels(self.xs_var)
         if loss_type=='ce':
             loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
-        #elif loss_type=='ods':
-            #loss = tf.reduce_sum(logits*self.tf_w, axis=-1)
-
+        elif loss_type=='ods':
+            loss = tf.reduce_sum(logits*self.tf_w, axis=-1)
         elif loss_type=='cw':
             mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
             label_score = tf.reduce_sum(mask*logits, axis=1)
@@ -71,17 +71,29 @@ class Attacker(BatchAttack):
         
         for i in range(self.iteration):
             #print("visted_logits.shape", visted_logits.shape)
-            if i%20==0 or i%20==10: prev_grad=0
-            if i%20<10:
-                grad, loss, stop_mask, logits  = self._session.run(
+            if i%30==0 or i%30==10: prev_grad=0
+            if i%30<10:
+                self.alpha = self.eps / 2
+                if i<10:
+                    grad, loss, stop_mask, logits  = self._session.run(
+                        (self.grad_kl, self.loss_ods, self.stop_mask_ods, self.logits_ods), 
+                        feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
+                            self.visited_logits:visted_logits, 
+                            self.tf_w:2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
+                else:
+                    grad, loss, stop_mask, logits  = self._session.run(
                         (self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
+
+#                print("loss_kl", loss[:10])
+
             else:
+                self.alpha = self.eps / 7
                 grad, loss, stop_mask, logits  = self._session.run(
                         (self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
-
-                if i%20==19: # save visited logits
+#                print("loss_cw", loss[:10])
+                if i%30==29: # save visited logits
                     visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
