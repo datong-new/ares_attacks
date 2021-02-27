@@ -45,8 +45,15 @@ class Attacker(BatchAttack):
             # ce
             #loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
         elif loss_type=="kl":
+
             log_nature_logits=tf.nn.log_softmax(self.visited_logits, axis=-1)
             log_logits=tf.nn.log_softmax(logits, axis=-1)
+
+            """
+
+            cos_dis = 1-tf.reduce_sum(log_nature_logits * log_logits[:,None,:], axis=-1)
+            loss = tf.reduce_mean(cos_dis, axis=-1)
+            """
             exp_nature_logits=tf.exp(log_nature_logits)
             neg_ent = tf.reduce_sum(exp_nature_logits* log_nature_logits, axis=-1)
             neg_cross_ent = tf.reduce_sum(exp_nature_logits * log_logits[:, None, :], axis=-1)
@@ -68,13 +75,15 @@ class Attacker(BatchAttack):
         xs_adv = xs
         visted_logits = self._session.run(self.logits_ce, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         visted_logits = visted_logits[:, None, :]
+
+        kl_steps, cw_steps, total_steps = 10, 10, 20
         
         for i in range(self.iteration):
             #print("visted_logits.shape", visted_logits.shape)
-            if i%30==0 or i%30==10: prev_grad=0
-            if i%30<10:
+            if i%total_steps==0 or i%total_steps==kl_steps: prev_grad=0
+            if i%total_steps<kl_steps:
                 self.alpha = self.eps / 2
-                if i%30<3: # do ods first
+                if i<10: # do ods first
                     grad, loss, stop_mask, logits  = self._session.run(
                         (self.grad_kl, self.loss_ods, self.stop_mask_ods, self.logits_ods), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
@@ -93,7 +102,7 @@ class Attacker(BatchAttack):
                         (self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
 #                print("loss_cw", loss[:10])
-                if i%30==29: # save visited logits
+                if (i+1)%total_steps==0: # save visited logits
                     visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
