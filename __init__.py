@@ -43,7 +43,7 @@ class Attacker(BatchAttack):
             second_scores = tf.reduce_max((1- mask) * logits - 1e4*mask,  axis=1)
             loss = -(label_score - second_scores)
             # ce
-            loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
+            #loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
         elif loss_type=="kl":
             log_nature_logits=tf.nn.log_softmax(self.visited_logits, axis=-1)
             log_logits=tf.nn.log_softmax(logits, axis=-1)
@@ -68,22 +68,23 @@ class Attacker(BatchAttack):
         xs_adv = xs
         visted_logits = self._session.run(self.logits_ce, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         visted_logits = visted_logits[:, None, :]
+        
         for i in range(self.iteration):
+            #print("visted_logits.shape", visted_logits.shape)
+            if i%20==0 or i%20==10: prev_grad=0
             if i%20<10:
-                if i%20==0: prev_grad = 0
-                grad = self._session.run(self.grad_kl, feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
-                loss, stop_mask = self.loss_kl, self.stop_mask_kl
+                grad, loss, stop_mask, logits  = self._session.run(
+                        (self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl), 
+                        feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
             else:
-                if i%20==10: prev_grad = 0
-                grad = self._session.run(self.grad_cw, feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
-                
-                loss, stop_mask = self.loss_cw, self.stop_mask_cw
-                if i%20==19:
-                    logits = self.logits_cw.eval(session=self._session)[:,None,:]
-#                    self.visited_logits = np.concatenate((self.visited_logits, logits), axis=1)
+                grad, loss, stop_mask, logits  = self._session.run(
+                        (self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw), 
+                        feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
+
+                if i%20==19: # save visited logits
+                    visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
-            loss, stop_mask = loss.eval(session=self._session), stop_mask.eval(session=self._session)
             print(i, "stop_mask", stop_mask.sum())
 
             # MI
