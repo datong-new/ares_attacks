@@ -20,20 +20,20 @@ class Attacker(BatchAttack):
         self.ys_var = get_ys_ph(model, batch_size)
         self.visited_logits = tf.placeholder(self.model.x_dtype, [batch_size, None, self.num_classes])
         self.tf_w = tf.placeholder(self.model.x_dtype, [batch_size, self.num_classes])
+        logits, label = self.model._logits_and_labels(self.xs_var)
 
-        self.grad_ods, self.loss_ods, self.stop_mask_ods, self.logits_ods = self._get_gradients(loss_type="ods")
-        self.grad_ce, self.loss_ce, self.stop_mask_ce, self.logits_ce = self._get_gradients(loss_type="ce")
-        self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw = self._get_gradients(loss_type="cw")
-        self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl = self._get_gradients(loss_type="kl")
-        self.grad_cos, self.loss_cos, self.stop_mask_cos, self.logits_cos = self._get_gradients(loss_type="cos")
+        self.grad_ods, self.loss_ods, self.stop_mask_ods, self.logits_ods = self._get_gradients(logits, label, loss_type="ods")
+        self.grad_ce, self.loss_ce, self.stop_mask_ce, self.logits_ce = self._get_gradients(logits, label, loss_type="ce")
+        self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw = self._get_gradients(logits, label, loss_type="cw")
+        self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl = self._get_gradients(logits, label, loss_type="kl")
+        self.grad_cos, self.loss_cos, self.stop_mask_cos, self.logits_cos = self._get_gradients(logits, label, loss_type="cos")
 
         self.iteration = 100
 
     def init_delta(self):
         return (2*np.random.uniform(size=self.xs_var.shape)-1) * self.eps
 
-    def _get_gradients(self, loss_type="ce"):
-        logits, label = self.model._logits_and_labels(self.xs_var)
+    def _get_gradients(self, logits, label, loss_type="ce"):
         if loss_type=='ce':
             loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
         elif loss_type=='ods':
