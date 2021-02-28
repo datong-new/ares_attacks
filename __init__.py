@@ -25,6 +25,7 @@ class Attacker(BatchAttack):
         self.grad_ce, self.loss_ce, self.stop_mask_ce, self.logits_ce = self._get_gradients(loss_type="ce")
         self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw = self._get_gradients(loss_type="cw")
         self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl = self._get_gradients(loss_type="kl")
+        self.grad_cos, self.loss_cos, self.stop_mask_cos, self.logits_cos = self._get_gradients(loss_type="cos")
 
         self.iteration = 100
 
@@ -49,17 +50,35 @@ class Attacker(BatchAttack):
             log_nature_logits=tf.nn.log_softmax(self.visited_logits, axis=-1)
             log_logits=tf.nn.log_softmax(logits, axis=-1)
 
-            """
-
-            cos_dis = 1-tf.reduce_sum(log_nature_logits * log_logits[:,None,:], axis=-1)
-            loss = tf.reduce_mean(cos_dis, axis=-1)
-            """
             exp_nature_logits=tf.exp(log_nature_logits)
             neg_ent = tf.reduce_sum(exp_nature_logits* log_nature_logits, axis=-1)
             neg_cross_ent = tf.reduce_sum(exp_nature_logits * log_logits[:, None, :], axis=-1)
             kl_loss = neg_ent - neg_cross_ent
             kl_loss = tf.reduce_mean(kl_loss, axis=-1)
             loss = kl_loss
+        elif loss_type=="cos":
+            #visited_scores = tf.nn.softmax(self.visited_logits, axis=-1)
+            visited_scores = self.visited_logits
+            visited_directions = visited_scores[:, 1:, :] - visited_scores[:, 0:1, :]
+            visited_directions /= (tf.sqrt(tf.reduce_sum(visited_directions**2, axis=-1))[:,:,None]+1e-8)
+
+            #scores = tf.nn.softmax(logits, axis=-1)[:,None,:]
+            scores = logits[:,None,:]
+            current_direction = scores - visited_scores[:, 0:1, :]
+            current_direction /= (tf.sqrt(tf.reduce_sum(current_direction**2, axis=-1))[:,:,None]+1e-8)
+
+            cos_dis = 1-tf.reduce_mean(tf.reduce_sum(visited_directions*current_direction, axis=-1), axis=-1)
+            loss = cos_dis
+
+
+            log_nature_logits=tf.nn.log_softmax(self.visited_logits, axis=-1)
+            log_logits=tf.nn.log_softmax(logits, axis=-1)
+            exp_nature_logits=tf.exp(log_nature_logits)
+            neg_ent = tf.reduce_sum(exp_nature_logits* log_nature_logits, axis=-1)
+            neg_cross_ent = tf.reduce_sum(exp_nature_logits * log_logits[:, None, :], axis=-1)
+            kl_loss = neg_ent - neg_cross_ent
+            kl_loss = tf.reduce_mean(kl_loss, axis=-1)
+            loss += kl_loss
 
         grad = tf.gradients(loss, self.xs_var)[0]
         stop_mask = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32)
@@ -76,29 +95,30 @@ class Attacker(BatchAttack):
         visted_logits = self._session.run(self.logits_ce, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         visted_logits = visted_logits[:, None, :]
 
-        kl_steps, cw_steps, total_steps = 5, 5, 10
+        kl_steps, cw_steps, total_steps = 5, 20, 25
         stop_mask = None
         
         for i in range(self.iteration):
             #print("visted_logits.shape", visted_logits.shape)
             if i%total_steps==0 or i%total_steps==kl_steps: prev_grad=0
             if i%total_steps<kl_steps:
-                self.alpha = self.eps / 2
-                if i%total_steps<3: # do ods first
+                self.alpha = self.eps 
+                if visted_logits.shape[1]<2: # do ods first
                     grad, loss, stop_mask, logits  = self._session.run(
                         (self.grad_kl, self.loss_ods, self.stop_mask_ods, self.logits_ods), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
                             self.visited_logits:visted_logits, 
                             self.tf_w:2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
+#                    print("loss_ods", loss[:10])
                 else:
                     grad, loss, stop_mask, logits  = self._session.run(
-                        (self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl), 
+                        (self.grad_cos, self.loss_cos, self.stop_mask_cos, self.logits_cos), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
 
-#                print("loss_kl", loss[:10])
+                    #print("loss_cos", loss[:10])
 
             else:
-                self.alpha = self.eps / 2
+                self.alpha = self.eps / 7 
                 grad, loss, stop_mask, logits  = self._session.run(
                         (self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
@@ -107,11 +127,13 @@ class Attacker(BatchAttack):
                     visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
-            print(i, "stop_mask", stop_mask.sum())
+#            print(i, "stop_mask", stop_mask.sum())
 
             # MI
-            #grad = 0.75 * grad + 0.25 * prev_grad
-            #prev_grad = grad
+            """
+            grad = 0.75 * grad + 0.25 * prev_grad
+            prev_grad = grad
+            """
 
             grad_sign = np.sign(grad)
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
