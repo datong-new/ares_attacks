@@ -74,16 +74,23 @@ class Attacker(BatchAttack):
             current_direction = scores - visited_scores[:, 0:1, :]
             current_direction /= (tf.sqrt(tf.reduce_sum(current_direction ** 2, axis=-1))[:, :, None] + 1e-8)
 
-            cos_dis = 1 - tf.reduce_mean(tf.reduce_sum(visited_directions * current_direction, axis=-1), axis=-1)
+            direction_mask = (tf.reduce_sum(self.visited_logits[:, 1:, :], axis=-1) == 0)
+            direction_mask = tf.cast(direction_mask, dtype=tf.float32) # B x L, B is batch_size, L is the length of visited directions
+
+            #cos_dis = 1 - tf.reduce_mean(tf.reduce_sum(visited_directions * current_direction, axis=-1), axis=-1)
+            cos_dis = 1- tf.reduce_sum(tf.reduce_sum(visited_directions*current_direction, axis=-1) * direction_mask, axis=-1) / tf.reduce_sum(direction_mask, axis=-1)
             loss = cos_dis
 
             log_nature_logits = tf.nn.log_softmax(self.visited_logits, axis=-1)
             log_logits = tf.nn.log_softmax(logits, axis=-1)
             exp_nature_logits = tf.exp(log_nature_logits)
             neg_ent = tf.reduce_sum(exp_nature_logits * log_nature_logits, axis=-1)
-            neg_cross_ent = tf.reduce_sum(exp_nature_logits * log_logits[:, None, :], axis=-1)
-            kl_loss = neg_ent - neg_cross_ent
-            kl_loss = tf.reduce_mean(kl_loss, axis=-1)
+            neg_cross_ent = tf.reduce_sum(exp_nature_logits * log_logits[:, None, :], axis=-1) # B x L, here L is length of visited logits
+            kl_loss = neg_ent - neg_cross_ent # B x L
+            logits_mask = (tf.reduce_sum(self.visited_logits[:, :, :], axis=-1) == 0) # B x L
+            logits_mask = tf.cast(logits_mask, dtype=tf.float32)
+            #kl_loss = tf.reduce_mean(kl_loss, axis=-1)
+            kl_loss = tf.reduce_sum(kl_loss*logits_mask, axis=-1) / tf.reduce_sum(logits_mask, axis=-1)
             loss += kl_loss
         elif loss_type == 'dlr':
 
