@@ -19,21 +19,22 @@ class Attacker(BatchAttack):
         self.xs_var = get_xs_ph(model, batch_size)
         self.ys_var = get_ys_ph(model, batch_size)
         self.visited_logits = tf.placeholder(self.model.x_dtype, [batch_size, None, self.num_classes])
+        self.restart_mask = tf.placeholder(self.model.x_dtype, [batch_size,])
+
         self.tf_w = tf.placeholder(self.model.x_dtype, [batch_size, self.num_classes])
         logits, label = self.model._logits_and_labels(self.xs_var)
 
-        self.grad_ods, self.loss_ods, self.stop_mask_ods, self.logits_ods = self._get_gradients(logits, label,
-                                                                                                loss_type="ods")
-        self.grad_ce, self.loss_ce, self.stop_mask_ce, self.logits_ce = self._get_gradients(logits, label,
-                                                                                            loss_type="ce")
-        self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw = self._get_gradients(logits, label,
-                                                                                            loss_type="cw")
-        self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl = self._get_gradients(logits, label,
-                                                                                            loss_type="kl")
-        self.grad_cos, self.loss_cos, self.stop_mask_cos, self.logits_cos = self._get_gradients(logits, label,
-                                                                                                loss_type="cos")
-        self.grad_dlr, self.loss_dlr, self.stop_mask_dlr, self.logits_dlr = self._get_gradients(logits, label,
-                                                                                                loss_type="dlr")
+        self.grad_ods, self.loss_ods= self._get_gradients(logits, label, loss_type="ods")
+        self.grad_ce, self.loss_ce= self._get_gradients(logits, label, loss_type="ce")
+        self.grad_cw, self.loss_cw= self._get_gradients(logits, label, loss_type="cw")
+        self.grad_cos, self.loss_cos= self._get_gradients(logits, label, loss_type="cos")
+        self.grad_dlr, self.loss_dlr= self._get_gradients(logits, label, loss_type="dlr")
+
+        self.stop_mask, self.logits = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32), logits
+
+        self.loss = self.loss_cos * self.restart_mask + self.loss_dlr * (1-self.restart_mask)
+        self.grad = tf.gradients(self.loss, self.xs_var)[0]
+
         self.iteration = 100
 
     def init_delta(self):
@@ -97,11 +98,10 @@ class Attacker(BatchAttack):
             loss=dlr_loss
 
             #ce
-            loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
-
+        #    loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
         grad = tf.gradients(loss, self.xs_var)[0]
-        stop_mask = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32)
-        return grad, loss, stop_mask, logits
+
+        return grad, loss
 
     def config(self, **kwargs):
         if 'magnitude' in kwargs:
@@ -112,57 +112,69 @@ class Attacker(BatchAttack):
         xs_lo, xs_hi = xs - self.eps, xs + self.eps
         xs_adv = xs
         visted_logits = self._session.run(self.logits_ce, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
-        visted_logits = visted_logits[:, None, :]
+        visited_logits_list = []
+        for i in range(self.batch_size): visited_logits_list+=[[visted_logits[i,:]]]
+        max_len = 1
+        prev_loss = np.ones((self.batch_size,)) * (-1e8)
+        restart_count = np.zeros((self.batch_size,))
 
-        kl_steps, cw_steps, total_steps = 5, 20, 25
-        stop_mask = None
+        def pad_list2numpy(visited_logits_list, max_len):
+            new_list = []
+            for i in range(self.batch_size):
+                item = [[]+visited_logits_list[i]]
+                while len(item)<max_len:
+                    item += [np.array([0.]*self.num_classes)]
+                new_list += [item]
+            return np.array(new_list)
 
         for i in range(self.iteration):
-            # print("visted_logits.shape", visted_logits.shape)
-            if i % total_steps == 0 or i % total_steps == kl_steps: prev_grad = 0
-            if i % total_steps < kl_steps:
-                self.alpha = self.eps
-                if visted_logits.shape[1] < 2:  # do ods first
-                    grad, loss, stop_mask, logits = self._session.run(
-                        (self.grad_kl, self.loss_ods, self.stop_mask_ods, self.logits_ods),
-                        feed_dict={self.xs_var: xs_adv, self.ys_var: ys,
-                                   self.visited_logits: visted_logits,
-                                   self.tf_w: 2 * np.random.uniform(size=(self.batch_size, self.num_classes)) - 1})
-                #                    print("loss_ods", loss[:10])
-                else:
-                    grad, loss, stop_mask, logits = self._session.run(
-                        (self.grad_cos, self.loss_cos, self.stop_mask_cos, self.logits_cos),
-                        feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits: visted_logits})
+            restart_mask = restart_count<5
+            visted_logits_np = pad_list2numpy(visited_logits_list, max_len)
 
-                    # print("loss_cos", loss[:10])
-
+            if max_len<2:
+                grad, loss, stop_mask, logits = self._session.run(
+                    (self.grad_kl, self.loss_ods, self.stop_mask_ods, self.logits_ods),
+                    feed_dict={self.xs_var: xs_adv, self.ys_var: ys,
+                               self.visited_logits: visted_logits_np,
+                               self.tf_w: 2 * np.random.uniform(size=(self.batch_size, self.num_classes)) - 1})
             else:
-                self.alpha = self.eps / 7
-                '''
                 grad, loss, stop_mask, logits = self._session.run(
-                    (self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw),
-                    feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits: visted_logits})
-                #                print("loss_cw", loss[:10])
-                '''
-                #dlr loss
-                grad, loss, stop_mask, logits = self._session.run(
-                    (self.grad_dlr, self.loss_dlr, self.stop_mask_dlr, self.logits_dlr),
-                    feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits: visted_logits})
+                    (self.grad, self.loss, self.stop_mask, self.logits),
+                    feed_dict={self.xs_var: xs_adv, self.ys_var: ys,
+                               self.visited_logits: visted_logits_np,
+                               self.restart_mask: restart_mask,
+                               self.tf_w: 2 * np.random.uniform(size=(self.batch_size, self.num_classes)) - 1})
 
-                if (i + 1) % total_steps == 0:  # save visited logits
-                    visted_logits = np.concatenate((visted_logits, logits[:, None, :]), axis=1)
-
+            loss_mask = (loss>prev_loss+1e-6)
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
+            grad_sign = np.sign(grad)
             #            print(i, "stop_mask", stop_mask.sum())
-
             # MI
             """
             grad = 0.75 * grad + 0.25 * prev_grad
             prev_grad = grad
             """
+            # update step size for those with decreasing loss
+            self.alpha = self.alpha * loss_mask + (self.alpha /2) * (1-loss_mask)
+            ## self.alpha = self.eps for restart stage
+            self.alpha = self.alpha * (1-restart_mask) + (self.eps)*restart_mask
 
-            grad_sign = np.sign(grad)
-            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+            ## only update xs_adv with increasing loss
+            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask * loss_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
+            prev_loss = loss * loss_mask + prev_loss * (1-loss_mask)
+
+            # update restart count
+            restart_count += 1
+            alpha_mask = self.alpha < self.eps/16
+            restart_count = restart_count*alpha_mask
+
+            # update prev_loss if start to restart
+            restart_count_equal_0 = (restart_count==0)
+            prev_loss = prev_loss * (1-restart_count_equal_0) + (np.ones(prev_loss.shape)*(-1e8))
+
+            for idx in alpha_mask.nonzero()[0]:
+                visited_logits_list[idx] += [logits[idx, :]]
+                if (visited_logits_list[idx])>max_len: max_len += 1
 
         return xs_adv
