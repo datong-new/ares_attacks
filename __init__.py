@@ -68,15 +68,23 @@ class Attacker(BatchAttack):
         xs_adv = xs
         visted_logits = self._session.run(self.logits_ce, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         visted_logits = visted_logits[:, None, :]
+        restart_count = 0
+        prev_loss = -1e8
+        self.alpha = self.eps
         
         for i in range(self.iteration):
             #print("visted_logits.shape", visted_logits.shape)
-            if i%30==0 or i%30==10: prev_grad=0
-            if i%30<10:
-                self.alpha = self.eps / 2
-                if i%30<3: # do ods first
+            #if i%30==0 or i%30==10: prev_grad=0
+            if restart_count==0: 
+                self.alpha, prev_grad = self.eps, 0
+
+            if restart_count==5: 
+                xs_prev = xs_adv
+                self.alpha, prev_grad = self.eps/7, 0
+            if restart_count<5:
+                if i%30<5: # do ods first
                     grad, loss, stop_mask, logits  = self._session.run(
-                        (self.grad_kl, self.loss_ods, self.stop_mask_ods, self.logits_ods), 
+                        (self.grad_ods, self.loss_ods, self.stop_mask_ods, self.logits_ods), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
                             self.visited_logits:visted_logits, 
                             self.tf_w:2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
@@ -88,23 +96,39 @@ class Attacker(BatchAttack):
 #                print("loss_kl", loss[:10])
 
             else:
-                self.alpha = self.eps / 7
                 grad, loss, stop_mask, logits  = self._session.run(
                         (self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
 #                print("loss_cw", loss[:10])
-                if i%30==29: # save visited logits
+                #if i%30==29: # save visited logits
+                #    visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
+
+            if stop_mask[0]==0: return xs_adv
+
+            if loss[0] < prev_loss+1e-3 and restart_count>=5: 
+                xs_adv = xs_prev
+                print(i, "decay step size, loss:{}, prev_loss:{}, alpha:{}".format(loss[0], prev_loss, self.alpha))
+                self.alpha/=2
+                if self.alpha<self.eps/32: 
+                    restart_count=0
+                    self.alpha = self.eps
+                    prev_loss = -1e8
                     visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
+                continue
+            print(i, "loss:{}, prev_loss:{}, alpha:{}".format(loss[0], prev_loss, self.alpha))
+            if restart_count>=5: prev_loss=loss[0]
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
             print(i, "stop_mask", stop_mask.sum())
 
             # MI
-            grad = 0.75 * grad + 0.25 * prev_grad
-            prev_grad = grad
+#            grad = 0.75 * grad + 0.25 * prev_grad
+#            prev_grad = grad
 
             grad_sign = np.sign(grad)
+            xs_prev = xs_adv
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
+            restart_count+=1
 
         return xs_adv
