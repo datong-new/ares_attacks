@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 import tensorflow as tf
 from ares.attack.base import BatchAttack
 from ares.attack.utils import get_xs_ph, get_ys_ph
@@ -27,6 +28,12 @@ class Attacker(BatchAttack):
         self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl = self._get_gradients(loss_type="kl")
 
         self.iteration = 100
+
+        self.fail_logits, self.success_logits, self.original_logits = [], [], []
+        for i in range(self.num_classes):
+            self.fail_logits += [[]]
+            self.success_logits += [[]]
+            self.original_logits += [[]]
 
     def init_delta(self):
         return (2*np.random.uniform(size=self.xs_ph.shape)-1) * self.eps
@@ -68,6 +75,10 @@ class Attacker(BatchAttack):
         xs_adv = xs
         visted_logits = self._session.run(self.logits_ce, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         visted_logits = visted_logits[:, None, :]
+        label = ys[0]
+
+        self.original_logits[label] += [visted_logits]
+
         
         for i in range(self.iteration):
             #print("visted_logits.shape", visted_logits.shape)
@@ -97,7 +108,9 @@ class Attacker(BatchAttack):
                     visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
 
             grad = grad.reshape(self.batch_size, *self.model.x_shape)
-            print(i, "stop_mask", stop_mask.sum())
+            #print(i, "stop_mask", stop_mask.sum())
+
+            if stop_mask[0] == 0: break
 
             # MI
             grad = 0.75 * grad + 0.25 * prev_grad
@@ -106,5 +119,16 @@ class Attacker(BatchAttack):
             grad_sign = np.sign(grad)
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
+
+        if stop_mask[0] == 0:
+            self.success_logits[label] += [logits]
+        else:
+            self.fail_logits[label] += [logits]
+
+        if len(self.original_logits) == 20:
+            print("self.fail_logits", len(self.fail_logits), self.fail_logits)
+            print("self.success_logit", len(self.success_logits), self.success_logits)
+            torch.save([torch.from_numpy(self.fail_logits),
+                torch.from_numpy(self.success_logits)], "{}.pt".format(label))
 
         return xs_adv
