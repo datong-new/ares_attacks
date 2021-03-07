@@ -74,10 +74,11 @@ class Attacker(BatchAttack):
         xs_lo, xs_hi = xs - self.eps, xs + self.eps
         xs_adv = xs
         visted_logits = self._session.run(self.logits_ce, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
-        visted_logits = visted_logits[:, None, :]
         label = ys[0]
-
         self.original_logits[label] += [visted_logits]
+
+        visted_logits = visted_logits[:, None, :]
+
 
         
         for i in range(self.iteration):
@@ -125,10 +126,42 @@ class Attacker(BatchAttack):
         else:
             self.fail_logits[label] += [logits]
 
-        if len(self.original_logits) == 20:
-            print("self.fail_logits", len(self.fail_logits), self.fail_logits)
-            print("self.success_logit", len(self.success_logits), self.success_logits)
-            torch.save([torch.from_numpy(self.fail_logits),
-                torch.from_numpy(self.success_logits)], "{}.pt".format(label))
+        num=20
+
+        if len(self.original_logits[label]) == num:
+            print("label", label)
+            import matplotlib.pyplot as plt
+            x = np.array(list(range(0, 10)))
+            for count, y in enumerate(self.original_logits[label]):
+                y = y[0]
+                if count==0:plt.plot(x, y, color="black", label='original')
+                else: plt.plot(x, y, color="black")
+
+            plt.savefig("{}_original.png".format(label))
+            plt.clf()
+        if len(self.fail_logits[label]) == num:
+            import matplotlib.pyplot as plt
+            x = np.array(list(range(0, 10)))
+            for count, y in enumerate(self.fail_logits[label]):
+                y = y[0]
+                if count==0:plt.plot(x, y, color="red", label='fail')
+                else: plt.plot(x, y, color="red")
+            plt.savefig("{}_fail.png".format(label))
+            plt.clf()
+
+        if len(self.success_logits[label]) == num:
+            import matplotlib.pyplot as plt
+            x = np.array(list(range(0, 10)))
+            for count, y in enumerate(self.success_logits[label]):
+                y = y[0]
+                if count==0:plt.plot(x, y, color="green", label='success')
+                else: plt.plot(x, y, color="green")
+            plt.savefig("{}_success.png".format(label))
+            plt.clf()
+            torch.save([
+                torch.from_numpy(np.array(self.original_logits[label])),
+                torch.from_numpy(np.array(self.fail_logits[label])),
+                torch.from_numpy(np.array(self.success_logits[label]))],
+                "{}.pt".format(label))
 
         return xs_adv
