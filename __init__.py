@@ -1,5 +1,4 @@
 import numpy as np
-import torch
 import tensorflow as tf
 from ares.attack.base import BatchAttack
 from ares.attack.utils import get_xs_ph, get_ys_ph
@@ -19,21 +18,31 @@ class Attacker(BatchAttack):
         # placeholder for batch_attack's inputvar
         self.xs_var = get_xs_ph(model, batch_size)
         self.ys_var = get_ys_ph(model, batch_size)
-        self.visited_logits = tf.placeholder(self.model.x_dtype, [batch_size, None, self.num_classes])
-        self.tf_w = tf.placeholder(self.model.x_dtype, [batch_size, self.num_classes])
+        #self.tf_w = tf.placeholder(self.model.x_dtype, [batch_size, self.num_classes])
 
-        self.grad_ods, self.loss_ods, self.stop_mask_ods, self.logits_ods = self._get_gradients(loss_type="ods")
+        logits, label = self.model._logits_and_labels(self.xs_var)
+        mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
+        self.loss_y = tf.reduce_sum(mask*logits, axis=1)
+        self.grad_y = tf.gradients(-self.loss_y, self.xs_var)[0]
+        self.stop_mask = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32)
+
+        self.grad_ts = []
+        self.loss_ts = []
+        self.grad_minuss = []
+        self.loss_minuss=[]
+
+        for i in range(10):
+            loss = logits[0][i] 
+            self.grad_ts += [tf.gradients(loss, self.xs_var)[0]]
+            self.grad_minuss += [tf.gradients(loss-self.loss_y, self.xs_var)[0]]
+            self.loss_ts += [loss]
+            self.loss_minuss += [loss-self.loss_y]
+
         self.grad_ce, self.loss_ce, self.stop_mask_ce, self.logits_ce = self._get_gradients(loss_type="ce")
         self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw = self._get_gradients(loss_type="cw")
-        self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl = self._get_gradients(loss_type="kl")
+        #self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl = self._get_gradients(loss_type="kl")
 
         self.iteration = 100
-
-        self.fail_logits, self.success_logits, self.original_logits = [], [], []
-        for i in range(self.num_classes):
-            self.fail_logits += [[]]
-            self.success_logits += [[]]
-            self.original_logits += [[]]
 
     def init_delta(self):
         return (2*np.random.uniform(size=self.xs_ph.shape)-1) * self.eps
@@ -51,7 +60,20 @@ class Attacker(BatchAttack):
             loss = -(label_score - second_scores)
             # ce
             #loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
+        """
         elif loss_type=="kl":
+            visited_scores = self.visited_logits
+            visited_directions = visited_scores[:, 1:, :] - visited_scores[:, 0:1, :]
+            visited_directions /= (tf.sqrt(tf.reduce_sum(visited_directions**2, axis=-1))[:,:,None]+1e-8)
+
+            #scores = tf.nn.softmax(logits, axis=-1)[:,None,:]
+            scores = logits[:,None,:]
+            current_direction = scores - visited_scores[:, 0:1, :]
+            current_direction /= (tf.sqrt(tf.reduce_sum(current_direction**2, axis=-1))[:,:,None]+1e-8)
+
+            cos_dis = 1-tf.reduce_mean(tf.reduce_sum(visited_directions*current_direction, axis=-1), axis=-1)
+            loss = cos_dis
+
             log_nature_logits=tf.nn.log_softmax(self.visited_logits, axis=-1)
             log_logits=tf.nn.log_softmax(logits, axis=-1)
             exp_nature_logits=tf.exp(log_nature_logits)
@@ -59,7 +81,8 @@ class Attacker(BatchAttack):
             neg_cross_ent = tf.reduce_sum(exp_nature_logits * log_logits[:, None, :], axis=-1)
             kl_loss = neg_ent - neg_cross_ent
             kl_loss = tf.reduce_mean(kl_loss, axis=-1)
-            loss = kl_loss
+            loss += kl_loss
+        """
 
         grad = tf.gradients(loss, self.xs_var)[0]
         stop_mask = tf.cast(tf.equal(label, self.ys_var), dtype=tf.float32)
@@ -74,94 +97,43 @@ class Attacker(BatchAttack):
         xs_lo, xs_hi = xs - self.eps, xs + self.eps
         xs_adv = xs
         visted_logits = self._session.run(self.logits_ce, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
-        label = ys[0]
-        self.original_logits[label] += [visted_logits]
+        visted_logits[0,ys[0]] = -1e8
+        max_indices = np.argsort(-visted_logits[0])
 
-        visted_logits = visted_logits[:, None, :]
+        self.alpha = self.eps
 
+        target_num = 5
 
-        
-        for i in range(self.iteration):
-            #print("visted_logits.shape", visted_logits.shape)
-            if i%30==0 or i%30==10: prev_grad=0
-            if i%30<10:
-                self.alpha = self.eps / 2
-                if i%30<3: # do ods first
-                    grad, loss, stop_mask, logits  = self._session.run(
-                        (self.grad_kl, self.loss_ods, self.stop_mask_ods, self.logits_ods), 
-                        feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
-                            self.visited_logits:visted_logits, 
-                            self.tf_w:2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
+        for idx in max_indices[:target_num]:
+            iterations = 100//target_num
+            for i in range(iterations): # do z_max and z_y alternatively
+                self.alpha = self.eps
+                if i<iterations//2:
+                    if i%2==0:
+                        grad, stop_mask, loss = self._session.run(
+                                (self.grad_ts[idx], self.stop_mask, self.loss_ts[idx]),
+                                feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
+                    else:
+                        grad, stop_mask, loss = self._session.run(
+                                (self.grad_y, self.stop_mask, self.loss_y),
+                                feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
+
                 else:
-                    grad, loss, stop_mask, logits  = self._session.run(
-                        (self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl), 
-                        feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
+                    self.alpha = self.eps/4
+                    grad, stop_mask, loss = self._session.run(
+                            (self.grad_minuss[idx], self.stop_mask, self.loss_minuss[idx]),
+                            feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
 
-#                print("loss_kl", loss[:10])
+                if stop_mask[0]==0: return xs_adv
 
-            else:
-                self.alpha = self.eps / 7
-                grad, loss, stop_mask, logits  = self._session.run(
-                        (self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw), 
-                        feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
-#                print("loss_cw", loss[:10])
-                if i%30==29: # save visited logits
-                    visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
 
-            grad = grad.reshape(self.batch_size, *self.model.x_shape)
-            #print(i, "stop_mask", stop_mask.sum())
+                # MI
+#                grad = 0.75 * grad + 0.25 * prev_grad
+#                prev_grad = grad
 
-            if stop_mask[0] == 0: break
-
-            # MI
-            grad = 0.75 * grad + 0.25 * prev_grad
-            prev_grad = grad
-
-            grad_sign = np.sign(grad)
-            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
-            xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
-
-        if stop_mask[0] == 0:
-            self.success_logits[label] += [logits]
-        else:
-            self.fail_logits[label] += [logits]
-
-        num=20
-
-        if len(self.original_logits[label]) == num:
-            print("label", label)
-            import matplotlib.pyplot as plt
-            x = np.array(list(range(0, 10)))
-            for count, y in enumerate(self.original_logits[label]):
-                y = y[0]
-                if count==0:plt.plot(x, y, color="black", label='original')
-                else: plt.plot(x, y, color="black")
-
-            plt.savefig("{}_original.png".format(label))
-            plt.clf()
-        if len(self.fail_logits[label]) == num:
-            import matplotlib.pyplot as plt
-            x = np.array(list(range(0, 10)))
-            for count, y in enumerate(self.fail_logits[label]):
-                y = y[0]
-                if count==0:plt.plot(x, y, color="red", label='fail')
-                else: plt.plot(x, y, color="red")
-            plt.savefig("{}_fail.png".format(label))
-            plt.clf()
-
-        if len(self.success_logits[label]) == num:
-            import matplotlib.pyplot as plt
-            x = np.array(list(range(0, 10)))
-            for count, y in enumerate(self.success_logits[label]):
-                y = y[0]
-                if count==0:plt.plot(x, y, color="green", label='success')
-                else: plt.plot(x, y, color="green")
-            plt.savefig("{}_success.png".format(label))
-            plt.clf()
-            torch.save([
-                torch.from_numpy(np.array(self.original_logits[label])),
-                torch.from_numpy(np.array(self.fail_logits[label])),
-                torch.from_numpy(np.array(self.success_logits[label]))],
-                "{}.pt".format(label))
+                grad_sign = np.sign(grad)
+                xs_prev = xs_adv
+                xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+                xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
 
         return xs_adv
