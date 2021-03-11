@@ -46,6 +46,7 @@ class Attacker(BatchAttack):
             loss = -(label_score - second_scores)
             # ce
             # loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
+
         elif loss_type == "kl":
             log_nature_logits = tf.nn.log_softmax(self.visited_logits, axis=-1)
             log_logits = tf.nn.log_softmax(logits, axis=-1)
@@ -55,6 +56,7 @@ class Attacker(BatchAttack):
             kl_loss = neg_ent - neg_cross_ent
             kl_loss = tf.reduce_mean(kl_loss, axis=-1)
             loss = kl_loss
+
         elif loss_type =='md_zy':
             mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
             loss = tf.reduce_sum(mask * logits-(1-mask)*1e5, axis=1)
@@ -78,26 +80,25 @@ class Attacker(BatchAttack):
         xs_adv = xs
         visted_logits = self._session.run(self.logits_ce, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         visted_logits = visted_logits[:, None, :]
-        restart_count = 0
-        prev_loss = -1e8
         self.alpha = self.eps
+        self.num_restart=2
 
-        for i in range(self.iteration):
-            # print("visted_logits.shape", visted_logits.shape)
-            # if i%30==0 or i%30==10: prev_grad=0
-            if restart_count == 0:
-                self.alpha, prev_grad = self.eps, 0
-
-            if restart_count == 30:
-                xs_prev = xs_adv
-                self.alpha, prev_grad = self.eps / 7, 0
-            if restart_count < 30:
-                if i%30< 1:  # do ods first
+        for r in range(self.num_restart):
+            xs_adv = xs
+            k=int(self.iteration/self.num_restart)
+            for i in range(k):
+                if i<2:
+                    grad, loss, stop_mask, logits = self._session.run(
+                        (self.grad_ods, self.loss_ods, self.stop_mask_ods, self.logits_ods),
+                        feed_dict={self.xs_var: xs_adv, self.ys_var: ys,
+                                   self.visited_logits: visted_logits,
+                                   self.tf_w: 2 * np.random.uniform(size=(self.batch_size, self.num_classes)) - 1})
+                elif i<3:
                     grad, loss, stop_mask, logits = self._session.run(
                         (self.grad_zy, self.loss_zy, self.stop_mask_zy, self.logits_zy),
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys,
                                    self.visited_logits: visted_logits})
-                elif i%30 < 20:
+                elif i < k/2:
                     grad, loss, stop_mask, logits = self._session.run(
                         (self.grad_zmax, self.loss_zmax, self.stop_mask_zmax, self.logits_zmax),
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits: visted_logits})
@@ -106,54 +107,23 @@ class Attacker(BatchAttack):
                     grad, loss, stop_mask, logits = self._session.run(
                         (self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw),
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits: visted_logits})
-                    #v2
-                    '''
-                    grad, loss, stop_mask, logits = self._session.run(
-                        (self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl),
-                        feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits: visted_logits})
-                    '''
 
-            #                print("loss_kl", loss[:10])
+                if stop_mask[0] == 0: return xs_adv
 
-            else:
-                grad, loss, stop_mask, logits = self._session.run(
-                    (self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw),
-                    feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits: visted_logits})
-            #                print("loss_cw", loss[:10])
-            # if i%30==29: # save visited logits
-            #    visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
+                grad = grad.reshape(self.batch_size, *self.model.x_shape)
+                print(i, "stop_mask", stop_mask.sum())
 
-            if stop_mask[0] == 0: return xs_adv
+                # MI
+                #            grad = 0.75 * grad + 0.25 * prev_grad
+                #            prev_grad = grad
 
-            if loss[0] < prev_loss + 1e-3 and restart_count >= 30:
-                xs_adv = xs_prev
-                #print(i, "decay step size, loss:{}, prev_loss:{}, alpha:{}".format(loss[0], prev_loss, self.alpha))
-                self.alpha /= 2
-                if self.alpha < self.eps / 32:
-                    restart_count = 0
-                    self.alpha = self.eps
-                    prev_loss = -1e8
-                    visted_logits = np.concatenate((visted_logits, logits[:, None, :]), axis=1)
-                continue
-            #print(i, "loss:{}, prev_loss:{}, alpha:{}".format(loss[0], prev_loss, self.alpha))
-            if restart_count >= 30: prev_loss = loss[0]
-
-            grad = grad.reshape(self.batch_size, *self.model.x_shape)
-            print(i, "stop_mask", stop_mask.sum())
-
-            # MI
-            #            grad = 0.75 * grad + 0.25 * prev_grad
-            #            prev_grad = grad
-
-            grad_sign = np.sign(grad)
-            xs_prev = xs_adv
-            if i%30<1:
-                xs_adv = np.clip(xs_adv + (self.eps*2 * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
-            elif i % 30 < 20:
-                xs_adv = np.clip(xs_adv + (self.alpha * 2 * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
-            else:
-                xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
-            xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
-            restart_count += 1
+                grad_sign = np.sign(grad)
+                if i<2:
+                    xs_adv = np.clip(xs_adv + (self.eps * 2 * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+                elif i<k/2:
+                    xs_adv = np.clip(xs_adv + (self.alpha * 2 * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+                else:
+                    xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+                xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
 
         return xs_adv
