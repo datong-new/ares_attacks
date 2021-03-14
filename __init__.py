@@ -73,10 +73,10 @@ class Attacker(BatchAttack):
         self.alpha = self.eps
         
         for i in range(self.iteration):
-            #print("visted_logits.shape", visted_logits.shape)
             #if i%30==0 or i%30==10: prev_grad=0
             if restart_count==0: 
                 self.alpha, prev_grad = self.eps, 0
+                prev_grad_sign = None
 
             if restart_count==5: 
                 xs_prev = xs_adv
@@ -93,13 +93,11 @@ class Attacker(BatchAttack):
                         (self.grad_kl, self.loss_kl, self.stop_mask_kl, self.logits_kl), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
 
-#                print("loss_kl", loss[:10])
 
             else:
                 grad, loss, stop_mask, logits  = self._session.run(
                         (self.grad_cw, self.loss_cw, self.stop_mask_cw, self.logits_cw), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, self.visited_logits:visted_logits})
-#                print("loss_cw", loss[:10])
                 #if i%30==29: # save visited logits
                 #    visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
 
@@ -107,7 +105,6 @@ class Attacker(BatchAttack):
 
             if loss[0] < prev_loss+1e-3 and restart_count>=5: 
                 xs_adv = xs_prev
-                print(i, "decay step size, loss:{}, prev_loss:{}, alpha:{}".format(loss[0], prev_loss, self.alpha))
                 self.alpha/=2
                 if self.alpha<self.eps/32: 
                     restart_count=0
@@ -115,19 +112,26 @@ class Attacker(BatchAttack):
                     prev_loss = -1e8
                     visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
                 continue
-            print(i, "loss:{}, prev_loss:{}, alpha:{}".format(loss[0], prev_loss, self.alpha))
             if restart_count>=5: prev_loss=loss[0]
 
-            grad = grad.reshape(self.batch_size, *self.model.x_shape)
-            print(i, "stop_mask", stop_mask.sum())
+
+            grad_sign = np.sign(grad)
+            if prev_grad is not None:
+                prev_grad_sign = np.sign(prev_grad)
+                scale = 3**(prev_grad_sign*grad_sign)
+            else:
+                scale= np.ones(prev_grad.shape)
+            
+
+            prev_grad = grad
 
             # MI
 #            grad = 0.75 * grad + 0.25 * prev_grad
 #            prev_grad = grad
 
-            grad_sign = np.sign(grad)
             xs_prev = xs_adv
-            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * (grad_sign*scale), xs_lo, xs_hi)
+            #xs_adv = np.clip(xs_adv + (self.alpha  * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
             restart_count+=1
 
