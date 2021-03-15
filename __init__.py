@@ -123,11 +123,10 @@ class Attacker(BatchAttack):
                 scale= np.ones(prev_grad.shape)
             
 
-            prev_grad = grad
 
             # MI
-#            grad = 0.75 * grad + 0.25 * prev_grad
-#            prev_grad = grad
+            grad = 0.75 * grad + 0.25 * prev_grad
+            prev_grad = grad
 
             xs_prev = xs_adv
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * (grad_sign*scale), xs_lo, xs_hi)
