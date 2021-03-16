@@ -3,6 +3,7 @@ import tensorflow as tf
 from ares.attack.base import BatchAttack
 from ares.attack.utils import get_xs_ph, get_ys_ph
 from ares.loss import CrossEntropyLoss
+from skimage.filters import gaussian
 
 
 class Attacker(BatchAttack):
@@ -77,10 +78,13 @@ class Attacker(BatchAttack):
             if restart_count==0: 
                 self.alpha, prev_grad = self.eps, 0
                 prev_grad_sign = None
+                m,v=0,0
 
             if restart_count==5: 
                 xs_prev = xs_adv
                 self.alpha, prev_grad = self.eps/7, 0
+                less_count = 1
+                m,v=0,0
             if restart_count<5:
                 if i%30<5: # do ods first
                     grad, loss, stop_mask, logits  = self._session.run(
@@ -106,7 +110,9 @@ class Attacker(BatchAttack):
             if loss[0] < prev_loss+1e-3 and restart_count>=5: 
                 xs_adv = xs_prev
                 self.alpha/=2
-                if self.alpha<self.eps/32: 
+                less_count += 1
+#                if self.alpha<self.eps/32: 
+                if less_count>2:
                     restart_count=0
                     self.alpha = self.eps
                     prev_loss = -1e8
@@ -116,16 +122,29 @@ class Attacker(BatchAttack):
 
 
             grad_sign = np.sign(grad)
+
             if prev_grad is not None:
                 prev_grad_sign = np.sign(prev_grad)
                 scale = 3**(prev_grad_sign*grad_sign)
+                scale= np.ones(grad.shape)
             else:
-                scale= np.ones(prev_grad.shape)
-            
+                scale= np.ones(grad.shape)
 
+
+            m = 0.9*m + 0.1* grad
+            #m = m/0.9
+            v = 0.99*v + 0.01 * (grad**2)
+            #v = v/0.99
+            grad = m / (np.sqrt(v)+1e-8)
+
+            grad_sign = grad / np.abs(grad).max()
+
+            self.alpha = self.eps * 2
 
             # MI
+            """
             grad = 0.75 * grad + 0.25 * prev_grad
+            """
             prev_grad = grad
 
             xs_prev = xs_adv
