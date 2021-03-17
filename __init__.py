@@ -100,9 +100,11 @@ class Attacker(BatchAttack):
                     feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
                             self.visited_logits:visted_logits, 
                             self.tf_w:2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
+                grad_sign = np.sign(grad)
             else: # do attack
                 if i%round==3: 
-                    self.alpha = self.eps/min(4, (2**(i//round)))
+                    #self.alpha = self.eps/min(4, (2**(i//round)))
+                    self.alpha = 1
                     m,v=0,0
                     prev_grad = 0
                 grad, loss, stop_mask, logits  = self._session.run(
@@ -113,28 +115,28 @@ class Attacker(BatchAttack):
                         self.lambda_ph: np.random.uniform(size=(self.batch_size,)),
                         #self.tf_w:2*np.random.uniform(size=(self.batch_size, self.num_classes))-1
                         })
+                m = 0.9*m+0.1*grad
+                m/=0.9
+                v = 0.99*v + 0.01*(grad**2)
+                v/=0.99
+                grad = m / (np.sqrt(v)+1e-8)
+
+                max_ = np.abs(grad).max()
+                min_ = np.abs(grad).min()
+                max_alpha, min_alpha = self.eps*2, self.eps/10
+                a = (max_-min_)/(max_alpha-min_alpha)
+                b = (min_*max_alpha-max_*min_alpha) / (min_-max_)
+                grad_sign = a*grad + b 
+
+                #scale = 3**(np.sign(prev_grad)*np.sign(grad))
+                #grad_sign = np.sign(grad) * scale
+
+                #grad_sign = np.sign(grad)
                         
             if (i+1)%round==0 or (i+1)%round==(round-3)//2:
                 visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
 
             #print(i, "stop mask", stop_mask.sum())
-            m = 0.9*m+0.1*grad
-            m/=0.9
-            v = 0.99*v + 0.01*(grad**2)
-            v/=0.99
-            grad = m / (np.sqrt(v)+1e-8)
-
-            max_ = np.abs(grad).max()
-            min_ = np.abs(grad).min()
-            max_alpha, min_alpha = self.eps*2, self.eps/10
-            a = (max_-min_)/(max_alpha-min_alpha)
-            b = (min_*max_alpha-max_*min_alpha) / (min_-max_)
-            grad_sign = a*grad + b 
-
-            #scale = 3**(np.sign(prev_grad)*np.sign(grad))
-            #grad_sign = np.sign(grad) * scale
-
-            #grad_sign = np.sign(grad)
 
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
