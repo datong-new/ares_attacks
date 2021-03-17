@@ -76,17 +76,18 @@ class Attacker(BatchAttack):
         for i in range(self.iteration):
             #if i%30==0 or i%30==10: prev_grad=0
             if restart_count==0: 
-                self.alpha, prev_grad = self.eps, 0
+                self.alpha, prev_grad = self.eps*2, 0
                 prev_grad_sign = None
                 m,v=0,0
 
-            if restart_count==5: 
+            if restart_count==3: 
                 xs_prev = xs_adv
-                self.alpha, prev_grad = self.eps/7, 0
+                self.alpha, prev_grad = self.eps/2, 0
                 less_count = 1
                 m,v=0,0
-            if restart_count<5:
-                if i%30<5: # do ods first
+            if restart_count<3:
+                if i%30<3: # do ods first
+                #if True: # do ods first
                     grad, loss, stop_mask, logits  = self._session.run(
                         (self.grad_ods, self.loss_ods, self.stop_mask_ods, self.logits_ods), 
                         feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
@@ -107,8 +108,7 @@ class Attacker(BatchAttack):
 
             if stop_mask[0]==0: return xs_adv
 
-            if loss[0] < prev_loss+1e-3 and restart_count>=5: 
-                xs_adv = xs_prev
+            if loss[0] <= prev_loss and restart_count>=3: 
                 self.alpha/=2
                 less_count += 1
 #                if self.alpha<self.eps/32: 
@@ -118,28 +118,23 @@ class Attacker(BatchAttack):
                     prev_loss = -1e8
                     visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
                 continue
-            if restart_count>=5: prev_loss=loss[0]
-
-
-            grad_sign = np.sign(grad)
+            else: less_count=1
+            if restart_count>=3: prev_loss=loss[0]
 
             if prev_grad is not None:
-                prev_grad_sign = np.sign(prev_grad)
-                scale = 3**(prev_grad_sign*grad_sign)
+#                prev_grad_sign = np.sign(prev_grad)
+#                scale = 3**(prev_grad_sign*grad_sign)
                 scale= np.ones(grad.shape)
             else:
                 scale= np.ones(grad.shape)
 
 
             m = 0.9*m + 0.1* grad
-            #m = m/0.9
-            v = 0.99*v + 0.01 * (grad**2)
-            #v = v/0.99
-            grad = m / (np.sqrt(v)+1e-8)
+            m = m/0.9
+            v = 0.999*v + 0.001 * (grad**2)
+            v = v/0.999
+            grad_sign = m / (np.sqrt(v)+1e-8)
 
-            grad_sign = grad / np.abs(grad).max()
-
-            self.alpha = self.eps * 2
 
             # MI
             """
