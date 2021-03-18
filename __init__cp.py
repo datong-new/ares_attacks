@@ -29,12 +29,11 @@ class Attacker(BatchAttack):
 
         self.loss_zy = self._get_loss(self.logits, self.label, loss_type="z_y")
         self.loss_zmax = self._get_loss(self.logits, self.label, loss_type="z_max")
-        self.loss_kl = self._get_loss(self.logits, self.label, loss_type="emd")
+        self.loss_kl = self._get_loss(self.logits, self.label, loss_type="kl")
         self.grad_kl = tf.gradients(self.loss_kl, self.xs_var)[0]
 
         # attack loss
-        #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
-        self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax
+        self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
         self.grad_attack = tf.gradients(self.loss_attack, self.xs_var)[0]
 
         self.stop_mask = tf.cast(tf.equal(self.label, self.ys_var), dtype=tf.float32)
@@ -65,9 +64,8 @@ class Attacker(BatchAttack):
             kl_loss = tf.reduce_mean(kl_loss, axis=-1)
             loss = kl_loss
         elif loss_type=="emd":
-
-            tmp = tf.square((tf.cumsum(tf.nn.softmax(self.visited_logits, axis=-1), axis=-1) - tf.cumsum(tf.nn.softmax(logits[:, None, :], axis=-1), axis=-1)))
-            loss = tf.reduce_mean(tmp, axis=[1,2])
+            tmp = tf.square((tf.cumsum(self.visited_logits, axis=-1) - tf.cumsum(logits[:, None, :], axis=-1)))
+            loss = tmp.reduce_mean(tmp, axis=[1,2])
             #tmp = self.visited_logits - logits[:, None, :] # B x L x num_classes
             #loss = tf.reduce_mean(tf.abs(tmp), axis=[1,2])
         elif loss_type=='z_y':
