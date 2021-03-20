@@ -1,4 +1,5 @@
 import numpy as np
+import random
 import tensorflow as tf
 from ares.attack.base import BatchAttack
 from ares.attack.utils import get_xs_ph, get_ys_ph
@@ -18,6 +19,7 @@ class Attacker(BatchAttack):
         # placeholder for batch_attack's inputvar
         self.xs_var = get_xs_ph(model, batch_size)
         self.ys_var = get_ys_ph(model, batch_size)
+        self.restart_mask = tf.placeholder(self.model.x_dtype, [batch_size, ])
         self.visited_logits = tf.placeholder(self.model.x_dtype, [batch_size, None, self.num_classes])
         self.tf_w = tf.placeholder(self.model.x_dtype, [batch_size, self.num_classes])
 
@@ -29,13 +31,16 @@ class Attacker(BatchAttack):
 
         self.loss_zy = self._get_loss(self.logits, self.label, loss_type="z_y")
         self.loss_zmax = self._get_loss(self.logits, self.label, loss_type="z_max")
-        self.loss_kl = self._get_loss(self.logits, self.label, loss_type="emd")
+        self.loss_kl = self._get_loss(self.logits, self.label, loss_type="kl")
         self.grad_kl = tf.gradients(self.loss_kl, self.xs_var)[0]
 
         # attack loss
         #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
         self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax
         self.grad_attack = tf.gradients(self.loss_attack, self.xs_var)[0]
+
+        self.loss = self.restart_mask * self.loss_ods + (1-self.restart_mask) * self.loss_attack
+        self.grad = tf.gradients(self.loss, self.xs_var)[0]
 
         self.stop_mask = tf.cast(tf.equal(self.label, self.ys_var), dtype=tf.float32)
 
@@ -87,85 +92,80 @@ class Attacker(BatchAttack):
         if 'magnitude' in kwargs:
             self.eps = kwargs['magnitude'] - 1e-6
             self.alpha = self.eps / 7
-            self.iteration = 100
+            self.iteration = 20
 
     def batch_attack(self, xs, ys=None, ys_target=None):
         xs_lo, xs_hi = xs - self.eps, xs + self.eps
         xs_adv = xs
-        visted_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
-        visted_logits = visted_logits[:, None, :]
+        #visted_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
+        #visted_logits = visted_logits[:, None, :]
 
-        round = 20
+        round_num = 25
+        return_xs_adv = [None for _ in range(self.batch_size)]
+        restart_count = np.zeros(self.batch_size)
+        id2img = [i for i in range(self.batch_size)]
+        img2ids = [[i] for i in range(self.batch_size)]
+        tf_w = 2*np.random.uniform(size=(self.batch_size, self.num_classes))-1
+        fail_set = set(list(range(self.batch_size)))
 
         for i in range(self.iteration):
-            if i%round<3: # do ods
-                m,v=0,0
-                prev_grad = 0
-                if i%round==0: 
-                    self.alpha = self.eps*2
-                    #self.alpha = 1
-                    tf_w = 2*np.random.uniform(size=(self.batch_size, self.num_classes))-1
+            restart_count %= round_num
+            restart_mask = ((restart_count<3) * 1.0).astype(np.float32)
 
-                if i<3:
-                    grad, loss, stop_mask, logits  = self._session.run(
-                    (self.grad_ods, self.loss_ods, self.stop_mask, self.logits),
-                    #(self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
-                    feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
-                            self.visited_logits:visted_logits, 
-                            self.tf_w:tf_w
-                            })
-                else:
-                    grad, loss, stop_mask, logits  = self._session.run(
-                    #(self.grad_ods, self.loss_ods, self.stop_mask, self.logits),
-                    (self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
-                    feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
-                            self.visited_logits:visted_logits, 
-                            self.tf_w:2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
-                grad_sign = np.sign(grad)
-            else: # do attack
-                if i%round==3: 
-                    #self.alpha = self.eps/min(4, (2**(i//round)))
-                    self.alpha = 1
-                    m,v=0,0
-                    prev_grad = 0
-                grad, loss, stop_mask, logits  = self._session.run(
-                    (self.grad_attack, self.loss_attack, self.stop_mask, self.logits),
-                     feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
-                        self.visited_logits:visted_logits, 
-                        #self.lambda_ph: np.array([0.5]*self.batch_size),
-                        self.lambda_ph: np.random.uniform(size=(self.batch_size,)),
-                        #self.tf_w:2*np.random.uniform(size=(self.batch_size, self.num_classes))-1
-                        })
+            self.alpha = self.eps * 2 * restart_mask + self.eps / 4 * (1-restart_mask)
 
-                m = 0.9*m+0.1*grad
-                m/=0.9
-                v = 0.99*v + 0.01*(grad**2)
-                v/=0.99
-                grad = m / (np.sqrt(v)+1e-8)
-                
-                max_ = np.abs(grad).max()
-                min_ = np.abs(grad).min()
-                max_alpha, min_alpha = self.eps*2, self.eps/10
-                    
-                    
-                a = (max_alpha-min_alpha) / (max_-min_+1e-6)
-                b = (min_*max_alpha-max_*min_alpha) / (min_-max_-1e-6)
-                grad_sign = a*grad + b 
-                
-                #scale = 3**(np.sign(prev_grad)*np.sign(grad))
-                #grad_sign = np.sign(grad) * scale
-                
-                #grad_sign = np.sign(grad)
-                        
-            if (i+1)%round==0 or (i+1)%round==(round-3)//2:
-                visted_logits = np.concatenate((visted_logits, logits[:,None,:]), axis=1)
+            grad, loss, stop_mask, logits  = self._session.run(
+               (self.grad, self.loss, self.stop_mask, self.logits),
+               #(self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
+               feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
+                       #self.visited_logits:visted_logits, 
+                       self.tf_w:tf_w,
+                       self.restart_mask: restart_mask,
+                       self.lambda_ph: np.random.uniform(size=(self.batch_size,)),
 
-            #print(i, "stop mask", stop_mask.sum())
+                       })
+
+            free_ids = []
+
+            for idx in stop_mask.nonzero()[0]:
+                img = id2img[idx]
+                print("img", img)
+                if img in fail_set: fail_set.remove(img) # one img may successs attack in different ids
+                free_ids += img2ids[img]
+                return_xs_adv[img] = xs_adv[idx]
+
+            grad_sign = np.sign(grad)
 
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
+            print("fali_set", len(fail_set))
 
-        return xs_adv
+            if len(fail_set)==0: break
+
+            for free_id in free_ids:
+                # random select a img
+                rand_img = list(fail_set)[random.randint(0, len(fail_set)-1)]
+                rand_copy_id = img2ids[rand_img][random.randint(0, len(img2ids[rand_img])-1)]
+                xs_adv[free_id] = xs_adv[rand_copy_id]
+                ys[free_id] = ys[rand_copy_id]
+                xs_lo[free_id] = xs_lo[rand_copy_id]
+                xs_hi[free_id] = xs_hi[rand_copy_id]
+
+
+                id2img[free_id] = rand_img
+                img2ids[rand_img] += [free_id]
+
+                restart_count[free_id] = 0
+                tf_w[free_id] = 2*np.random.uniform(size=(self.num_classes))-1
+            restart_count += 1
+        for i in range(len(return_xs_adv)):
+            if return_xs_adv[i] is None:
+                return_xs_adv[i] = xs_adv[i]
+
+        print("return_xs_adv", np.array(return_xs_adv).max())
+        print("return_xs_adv", np.array(return_xs_adv).min())
+
+        return np.array(return_xs_adv)
 
 
 
