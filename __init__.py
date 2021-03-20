@@ -92,16 +92,19 @@ class Attacker(BatchAttack):
         if 'magnitude' in kwargs:
             self.eps = kwargs['magnitude'] - 1e-6
             self.alpha = self.eps / 7
-            self.iteration = 20
+            self.iteration = 100
 
     def batch_attack(self, xs, ys=None, ys_target=None):
+
         xs_lo, xs_hi = xs - self.eps, xs + self.eps
-        xs_adv = xs
+        ys_cp = ys.copy()
+        xs_lo_cp, xs_hi_cp = xs_lo.copy(), xs_hi.copy()
+        xs_adv = xs.copy()
         #visted_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         #visted_logits = visted_logits[:, None, :]
 
         round_num = 25
-        return_xs_adv = [None for _ in range(self.batch_size)]
+        return_xs_adv = xs.copy()
         restart_count = np.zeros(self.batch_size)
         id2img = [i for i in range(self.batch_size)]
         img2ids = [[i] for i in range(self.batch_size)]
@@ -117,28 +120,30 @@ class Attacker(BatchAttack):
             grad, loss, stop_mask, logits  = self._session.run(
                (self.grad, self.loss, self.stop_mask, self.logits),
                #(self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
-               feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
+               feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
                        #self.visited_logits:visted_logits, 
                        self.tf_w:tf_w,
                        self.restart_mask: restart_mask,
                        self.lambda_ph: np.random.uniform(size=(self.batch_size,)),
-
                        })
+
 
             free_ids = []
 
-            for idx in stop_mask.nonzero()[0]:
+
+            for idx in (1-stop_mask).nonzero()[0]:
                 img = id2img[idx]
-                print("img", img)
-                if img in fail_set: fail_set.remove(img) # one img may successs attack in different ids
-                free_ids += img2ids[img]
-                return_xs_adv[img] = xs_adv[idx]
+                if img in fail_set:
+                    fail_set.remove(img) # one img may successs attack in different ids
+                    return_xs_adv[img] = xs_adv[idx].copy()
+
+                    free_ids += img2ids[img]
+
 
             grad_sign = np.sign(grad)
 
-            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo, xs_hi)
+            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo_cp, xs_hi_cp)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
-            print("fali_set", len(fail_set))
 
             if len(fail_set)==0: break
 
@@ -146,10 +151,11 @@ class Attacker(BatchAttack):
                 # random select a img
                 rand_img = list(fail_set)[random.randint(0, len(fail_set)-1)]
                 rand_copy_id = img2ids[rand_img][random.randint(0, len(img2ids[rand_img])-1)]
-                xs_adv[free_id] = xs_adv[rand_copy_id]
-                ys[free_id] = ys[rand_copy_id]
-                xs_lo[free_id] = xs_lo[rand_copy_id]
-                xs_hi[free_id] = xs_hi[rand_copy_id]
+
+                xs_adv[free_id] = xs_adv[rand_copy_id].copy()
+                ys_cp[free_id] = ys[rand_img].copy()
+                xs_lo_cp[free_id] = xs_lo[rand_img].copy()
+                xs_hi_cp[free_id] = xs_hi[rand_img].copy()
 
 
                 id2img[free_id] = rand_img
@@ -158,14 +164,19 @@ class Attacker(BatchAttack):
                 restart_count[free_id] = 0
                 tf_w[free_id] = 2*np.random.uniform(size=(self.num_classes))-1
             restart_count += 1
-        for i in range(len(return_xs_adv)):
-            if return_xs_adv[i] is None:
-                return_xs_adv[i] = xs_adv[i]
 
-        print("return_xs_adv", np.array(return_xs_adv).max())
-        print("return_xs_adv", np.array(return_xs_adv).min())
+            stop_mask_, labels =  self._session.run(
+                       (self.stop_mask, self.label),  feed_dict={self.xs_var:return_xs_adv,
+                           self.ys_var: ys}
+                       )
+            """
+            print(i, "fail len", len(fail_set))
+            print("stop_mask_", stop_mask_.sum())
+            print("score", np.sum(np.logical_not(np.equal(labels, ys))))
+            """
 
-        return np.array(return_xs_adv)
+
+        return return_xs_adv
 
 
 
