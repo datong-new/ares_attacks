@@ -111,16 +111,17 @@ class Attacker(BatchAttack):
                     (self.grad_ods, self.loss_ods, self.stop_mask, self.logits),
                     #(self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
                     feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
-                            self.visited_logits:visted_logits, 
+#                            self.visited_logits:visted_logits, 
                             self.tf_w:tf_w
                             })
                 else:
                     grad, loss, stop_mask, logits  = self._session.run(
-                    #(self.grad_ods, self.loss_ods, self.stop_mask, self.logits),
-                    (self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
+                    (self.grad_ods, self.loss_ods, self.stop_mask, self.logits),
+                    #(self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
                     feed_dict={self.xs_var: xs_adv, self.ys_var: ys, 
-                            self.visited_logits:visted_logits, 
-                            self.tf_w:2*np.random.uniform(size=(self.batch_size, self.num_classes))-1})
+#                            self.visited_logits:visted_logits, 
+                            self.tf_w:tf_w
+                            })
                 grad_sign = np.sign(grad)
             else: # do attack
                 if i%round==3: 
@@ -137,6 +138,8 @@ class Attacker(BatchAttack):
                         #self.tf_w:2*np.random.uniform(size=(self.batch_size, self.num_classes))-1
                         })
 
+                """
+
                 m = 0.9*m+0.1*grad
                 m/=0.9
                 v = 0.99*v + 0.01*(grad**2)
@@ -151,6 +154,8 @@ class Attacker(BatchAttack):
                 a = (max_alpha-min_alpha) / (max_-min_+1e-6)
                 b = (min_*max_alpha-max_*min_alpha) / (min_-max_-1e-6)
                 grad_sign = a*grad + b 
+                """
+                grad_sign = np.sign(grad)
                 
                 #scale = 3**(np.sign(prev_grad)*np.sign(grad))
                 #grad_sign = np.sign(grad) * scale
