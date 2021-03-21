@@ -20,6 +20,7 @@ class Attacker(BatchAttack):
         self.xs_var = get_xs_ph(model, batch_size)
         self.ys_var = get_ys_ph(model, batch_size)
         self.restart_mask = tf.placeholder(self.model.x_dtype, [batch_size, ])
+        self.ods_mask = tf.placeholder(self.model.x_dtype, [batch_size, ])
         self.visited_logits = tf.placeholder(self.model.x_dtype, [batch_size, None, self.num_classes])
         self.tf_w = tf.placeholder(self.model.x_dtype, [batch_size, self.num_classes])
 
@@ -34,13 +35,15 @@ class Attacker(BatchAttack):
         self.loss_kl = self._get_loss(self.logits, self.label, loss_type="kl")
         self.loss_cw = self.loss_zmax + self.loss_zy
         self.grad_kl = tf.gradients(self.loss_kl, self.xs_var)[0]
+        self.loss_restart = self.ods_mask * self.loss_ods + (1-self.ods_mask) * self.loss_kl
 
         # attack loss
-        #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
-        self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax
+        self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
+        #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax
         self.grad_attack = tf.gradients(self.loss_attack, self.xs_var)[0]
 
-        self.loss = self.restart_mask * self.loss_ods + (1-self.restart_mask) * self.loss_attack
+
+        self.loss = self.restart_mask * self.loss_restart + (1-self.restart_mask) * self.loss_attack
         self.grad = tf.gradients(self.loss, self.xs_var)[0]
 
         self.stop_mask = tf.cast(tf.equal(self.label, self.ys_var), dtype=tf.float32)
@@ -117,7 +120,16 @@ class Attacker(BatchAttack):
         prev_grad = np.zeros(xs.shape)
         self.alpha = np.ones(self.batch_size)
 
+        visted_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
+        visted_logits = visted_logits[:, None, :]
+        visted_logits_cp = visted_logits.copy()
+
         for i in range(self.iteration):
+            if i<3:
+                ods_mask = np.ones(self.batch_size, dtype=np.float32)
+            else:
+                ods_mask = np.zeros(self.batch_size, dtype=np.float32)
+
             restart_count %= round_num
             for k in range(self.batch_size):
                 #if restart_count[k]==3 or restart_count[k]==0:
@@ -145,7 +157,9 @@ class Attacker(BatchAttack):
                        #self.visited_logits:visted_logits, 
                        self.tf_w:tf_w,
                        self.restart_mask: restart_mask,
+                       self.ods_mask: ods_mask,
                        self.lambda_ph: np.random.uniform(size=(self.batch_size,)),
+                       self.visited_logits:visted_logits, 
                        })
 
 
@@ -205,7 +219,7 @@ class Attacker(BatchAttack):
                 ys_cp[free_id] = ys[rand_img].copy()
                 xs_lo_cp[free_id] = xs_lo[rand_img].copy()
                 xs_hi_cp[free_id] = xs_hi[rand_img].copy()
-
+                visted_logits_cp[free_id] = visted_logits[rand_img]
 
                 id2img[free_id] = rand_img
                 img2ids[rand_img] += [free_id]
