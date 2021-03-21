@@ -125,8 +125,8 @@ class Attacker(BatchAttack):
                     m[k] = np.zeros(xs.shape[1:])
                     v[k] = np.zeros(xs.shape[1:])
                     prev_grad[k] = np.zeros(xs.shape[1:])
-                    if restart_count[k]==0:
-                        self.alpha[k] = self.eps /2
+                    if restart_count[k]<3:
+                        self.alpha[k] = self.eps * 2
                     else:
                         self.alpha[k] = self.eps / 2
 
