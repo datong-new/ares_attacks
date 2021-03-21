@@ -32,6 +32,7 @@ class Attacker(BatchAttack):
         self.loss_zy = self._get_loss(self.logits, self.label, loss_type="z_y")
         self.loss_zmax = self._get_loss(self.logits, self.label, loss_type="z_max")
         self.loss_kl = self._get_loss(self.logits, self.label, loss_type="kl")
+        self.loss_cw = self.loss_zmax + self.loss_zy
         self.grad_kl = tf.gradients(self.loss_kl, self.xs_var)[0]
 
         # attack loss
@@ -103,7 +104,7 @@ class Attacker(BatchAttack):
         #visted_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         #visted_logits = visted_logits[:, None, :]
 
-        round_num = 25
+        round_num = 20
         return_xs_adv = xs.copy()
         restart_count = np.zeros(self.batch_size)
         id2img = [i for i in range(self.batch_size)]
@@ -111,14 +112,30 @@ class Attacker(BatchAttack):
         tf_w = 2*np.random.uniform(size=(self.batch_size, self.num_classes))-1
         fail_set = set(list(range(self.batch_size)))
 
+        m = np.zeros(xs.shape)
+        v = np.zeros(xs.shape)
+        prev_grad = np.zeros(xs.shape)
+        self.alpha = np.ones(self.batch_size)
+
         for i in range(self.iteration):
             restart_count %= round_num
+            for k in range(self.batch_size):
+                #if restart_count[k]==3 or restart_count[k]==0:
+                if restart_count[k]<=3:
+                    m[k] = np.zeros(xs.shape[1:])
+                    v[k] = np.zeros(xs.shape[1:])
+                    prev_grad[k] = np.zeros(xs.shape[1:])
+                    if restart_count[k]==0:
+                        self.alpha[k] = self.eps /2
+                    else:
+                        self.alpha[k] = self.eps / 2
+
             restart_mask = ((restart_count<3) * 1.0).astype(np.float32)
 
-            self.alpha = self.eps * 2 * restart_mask + self.eps / 4 * (1-restart_mask)
+            #self.alpha = self.eps * 2 * restart_mask + self.eps / 4 * (1-restart_mask)
 
-            grad, loss, stop_mask, logits  = self._session.run(
-               (self.grad, self.loss, self.stop_mask, self.logits),
+            grad, loss, stop_mask, logits, loss_cw  = self._session.run(
+               (self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw),
                #(self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
                feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
                        #self.visited_logits:visted_logits, 
@@ -133,6 +150,7 @@ class Attacker(BatchAttack):
 
             for idx in (1-stop_mask).nonzero()[0]:
                 img = id2img[idx]
+                loss_cw[idx] = -1e-8
                 if img in fail_set:
                     fail_set.remove(img) # one img may successs attack in different ids
                     return_xs_adv[img] = xs_adv[idx].copy()
@@ -140,19 +158,46 @@ class Attacker(BatchAttack):
                     free_ids += img2ids[img]
 
 
-            grad_sign = np.sign(grad)
+            #grad_sign = np.sign(grad)
+            grad_sign = np.sign(grad) * (3**(np.sign(prev_grad)*np.sign(grad)))
+            prev_grad = grad
+
+            """
+            m = 0.9*m+0.1*grad
+            m/=0.9
+            v = 0.99*v + 0.01*(grad**2)
+            v/=0.99
+            grad = m / (np.sqrt(v)+1e-8)
+
+            max_ = np.max(np.abs(grad), axis=(1,2,3))
+            min_ = np.min(np.abs(grad), axis=(1,2,3))
+            max_alpha, min_alpha = self.eps*2, self.eps/4
+            a = (max_alpha-min_alpha) / (max_-min_+1e-6)
+            b = (min_*max_alpha-max_*min_alpha) / (min_-max_-1e-6)
+            self.alpha = 1
+            grad_sign = a[:,None, None, None]*grad + b[:,None, None, None]
+            """
+
+
 
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo_cp, xs_hi_cp)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
 
             if len(fail_set)==0: break
 
+            sort_idx = np.argsort(-loss_cw)
+            selected_idx = sort_idx[:3]
+
             for free_id in free_ids:
                 # random select a img
-                rand_img = list(fail_set)[random.randint(0, len(fail_set)-1)]
-                rand_copy_id = img2ids[rand_img][random.randint(0, len(img2ids[rand_img])-1)]
+                rand_copy_id = selected_idx[random.randint(0, len(selected_idx)-1)]
+                rand_img = id2img[rand_copy_id]
 
-                xs_adv[free_id] = xs_adv[rand_copy_id].copy()
+                #rand_img = list(fail_set)[random.randint(0, len(fail_set)-1)]
+                #rand_copy_id = img2ids[rand_img][random.randint(0, len(img2ids[rand_img])-1)]
+
+                xs_adv[free_id] = xs_adv[rand_copy_id].copy() 
+                #xs_adv[free_id] = xs[rand_img].copy()
                 ys_cp[free_id] = ys[rand_img].copy()
                 xs_lo_cp[free_id] = xs_lo[rand_img].copy()
                 xs_hi_cp[free_id] = xs_hi[rand_img].copy()
@@ -161,19 +206,20 @@ class Attacker(BatchAttack):
                 id2img[free_id] = rand_img
                 img2ids[rand_img] += [free_id]
 
-                restart_count[free_id] = 0
+                restart_count[free_id] = round_num
                 tf_w[free_id] = 2*np.random.uniform(size=(self.num_classes))-1
-            restart_count += 1
+            #print(i, "fail len", len(fail_set))
 
+            """
             stop_mask_, labels =  self._session.run(
                        (self.stop_mask, self.label),  feed_dict={self.xs_var:return_xs_adv,
                            self.ys_var: ys}
                        )
-            """
-            print(i, "fail len", len(fail_set))
             print("stop_mask_", stop_mask_.sum())
             print("score", np.sum(np.logical_not(np.equal(labels, ys))))
             """
+
+            restart_count += 1
 
 
         return return_xs_adv
