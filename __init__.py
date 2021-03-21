@@ -125,6 +125,9 @@ class Attacker(BatchAttack):
                     m[k] = np.zeros(xs.shape[1:])
                     v[k] = np.zeros(xs.shape[1:])
                     prev_grad[k] = np.zeros(xs.shape[1:])
+                    if restart_count[k]==0:
+                        tf_w[k] = 2*np.random.uniform(size=(self.num_classes))-1
+
                     if restart_count[k]<3:
                         self.alpha[k] = self.eps * 2
                     else:
@@ -207,7 +210,6 @@ class Attacker(BatchAttack):
                 img2ids[rand_img] += [free_id]
 
                 restart_count[free_id] = round_num
-                tf_w[free_id] = 2*np.random.uniform(size=(self.num_classes))-1
             #print(i, "fail len", len(fail_set))
 
             """
