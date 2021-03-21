@@ -127,11 +127,12 @@ class Attacker(BatchAttack):
                     prev_grad[k] = np.zeros(xs.shape[1:])
                     if restart_count[k]==0:
                         tf_w[k] = 2*np.random.uniform(size=(self.num_classes))-1
-
+                    """
                     if restart_count[k]<3:
                         self.alpha[k] = self.eps * 2
                     else:
                         self.alpha[k] = self.eps / 2
+                    """
 
             restart_mask = ((restart_count<3) * 1.0).astype(np.float32)
 
@@ -162,10 +163,11 @@ class Attacker(BatchAttack):
 
 
             #grad_sign = np.sign(grad)
+            """
             grad_sign = np.sign(grad) * (3**(np.sign(prev_grad)*np.sign(grad)))
             prev_grad = grad
-
             """
+
             m = 0.9*m+0.1*grad
             m/=0.9
             v = 0.99*v + 0.01*(grad**2)
@@ -179,7 +181,6 @@ class Attacker(BatchAttack):
             b = (min_*max_alpha-max_*min_alpha) / (min_-max_-1e-6)
             self.alpha = 1
             grad_sign = a[:,None, None, None]*grad + b[:,None, None, None]
-            """
 
 
 
