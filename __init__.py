@@ -33,13 +33,21 @@ class Attacker(BatchAttack):
         self.loss_zy = self._get_loss(self.logits, self.label, loss_type="z_y")
         self.loss_zmax = self._get_loss(self.logits, self.label, loss_type="z_max")
         self.loss_kl = self._get_loss(self.logits, self.label, loss_type="kl")
+        self.loss_ce = self._get_loss(self.logits, self.label, loss_type="ce")
         self.loss_cw = self.loss_zmax + self.loss_zy
         self.grad_kl = tf.gradients(self.loss_kl, self.xs_var)[0]
         self.loss_restart = self.ods_mask * self.loss_ods + (1-self.ods_mask) * self.loss_kl
 
+        ## warm loss
+        #self.loss_warm = self.loss_ce + self.loss_kl
+        #self.loss_warm = self.loss_ce
+        #self.loss_warm = self.loss_zy
+        self.loss_warm = self._get_loss(self.logits, self.label, loss_type="warm")
+        self.grad_warm = tf.gradients(self.loss_warm, self.xs_var)[0]
+
         # attack loss
         #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
-        self.loss_attack = self.loss_zy  + self.loss_zmax
+        self.loss_attack = self.loss_zy  + self.loss_zmax + self.loss_kl
         #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax
         self.grad_attack = tf.gradients(self.loss_attack, self.xs_var)[0]
 
@@ -95,6 +103,12 @@ class Attacker(BatchAttack):
             label_score = tf.reduce_sum(mask*logits, axis=1)
             second_scores = tf.reduce_max((1- mask) * logits - 1e4*mask,  axis=1)
             loss = second_scores
+        elif loss_type=="warm":
+            mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
+            label_score = tf.reduce_sum(mask*logits, axis=1)
+            others = tf.reduce_sum((1- mask) * logits - 1e4*mask, axis=1)
+            #loss = -label_score+others
+            loss = others
 
         return loss
 
@@ -131,7 +145,35 @@ class Attacker(BatchAttack):
         visited_logits_list = [[original_logits[i].copy()] for i in range(self.batch_size)]
         loss_prev = np.ones(self.batch_size) * -1e4
 
-        for i in range(self.iteration):
+        ## warm start
+        m, v = 0,0
+        for i in range(10):
+            grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
+               #(self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+               (self.grad_warm, self.loss_warm, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+               feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
+                   self.visited_logits:original_logits[:,None,:], 
+                })
+            m = 0.9*m+0.1*grad
+            m/=0.9
+            v = 0.99*v + 0.01*(grad**2)
+            v/=0.99
+            grad = m / (np.sqrt(v)+1e-8)
+
+            max_ = np.max(np.abs(grad), axis=(1,2,3))
+            min_ = np.min(np.abs(grad), axis=(1,2,3))
+            max_alpha, min_alpha = self.eps*2, self.eps/4
+            a = (max_alpha-min_alpha) / (max_-min_+1e-6)
+            b = (min_*max_alpha-max_*min_alpha) / (min_-max_-1e-6)
+            self.alpha = 1
+            grad_sign = a[:,None, None, None]*grad + b[:,None, None, None]
+
+            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo_cp, xs_hi_cp)
+            xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
+
+        warm_points = xs_adv.copy()
+
+        for i in range(self.iteration-10):
             ods_mask = np.zeros(self.batch_size, dtype=np.float32)
 
             for k in range(self.batch_size):
@@ -166,7 +208,8 @@ class Attacker(BatchAttack):
                        self.restart_mask: restart_mask,
                        self.ods_mask: ods_mask,
                        self.lambda_ph: np.random.uniform(size=(self.batch_size,)),
-                       self.visited_logits:visited_logits, 
+                       #self.visited_logits:visited_logits, 
+                       self.visited_logits:original_logits[:,None,:], 
                        })
 
 
@@ -175,11 +218,12 @@ class Attacker(BatchAttack):
             loss_prev = loss_cw.copy()
             #print("loss_delta", loss_delta)
             for k in range(self.batch_size):
-                if restart_count[k]%round_num>3 and loss_delta[k]<=1e-4:
-                #if ((restart_count[k]+1) % round_num) in [0, (round_num-3)//2]:
+                #if restart_count[k]%round_num>3 and loss_delta[k]<=1e-4:
+                if ((restart_count[k]+1) % round_num) in [0, (round_num-3)//2]:
                     if len(visited_logits_list[k])==4:
                         img = id2img[k]
                         visited_logits_list[k] = [original_logits[img]]
+                        xs_adv[k] = warm_points[img]
                         restart_count[k] = 0-1 # do ods
                     else:
                         visited_logits_list[k] += [logits[k]]
@@ -226,7 +270,7 @@ class Attacker(BatchAttack):
             if len(fail_set)==0: break
 
             sort_idx = np.argsort(-loss_cw)
-            selected_idx = sort_idx[:5]
+            selected_idx = sort_idx[:10]
             #print("loss cw", loss_cw[selected_idx])
 
             for free_id in free_ids:
@@ -237,8 +281,8 @@ class Attacker(BatchAttack):
                 #rand_img = list(fail_set)[random.randint(0, len(fail_set)-1)]
                 #rand_copy_id = img2ids[rand_img][random.randint(0, len(img2ids[rand_img])-1)]
 
-                xs_adv[free_id] = xs_adv[rand_copy_id].copy() 
-                #xs_adv[free_id] = xs[rand_img].copy()
+                #xs_adv[free_id] = xs_adv[rand_copy_id].copy() 
+                xs_adv[free_id] = warm_points[rand_img].copy()
                 ys_cp[free_id] = ys[rand_img].copy()
                 xs_lo_cp[free_id] = xs_lo[rand_img].copy()
                 xs_hi_cp[free_id] = xs_hi[rand_img].copy()
