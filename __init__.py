@@ -231,8 +231,8 @@ class Attacker(BatchAttack):
                 xs_lo_cp[free_id] = xs_lo[rand_img].copy()
                 xs_hi_cp[free_id] = xs_hi[rand_img].copy()
 
-                visted_logits_list[k] = [original_logits[rand_img].copy()]
-                visted_logits[k] = np.ones((20, self.num_classes))
+                visted_logits_list[free_id] = [original_logits[rand_img].copy()]
+                visted_logits[free_id] = np.ones((20, self.num_classes))
 
                 id2img[free_id] = rand_img
                 img2ids[rand_img] += [free_id]
