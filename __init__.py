@@ -67,7 +67,7 @@ class Attacker(BatchAttack):
             self.visited_logits_mask = tf.cast(
                     tf.equal(
                         tf.reduce_sum(self.visited_logits, axis=-1), 
-                        tf.constant(self.num_classes)), 
+                        tf.constant(self.num_classes, dtype=tf.float32)), 
                 dtype=tf.float32)
 
             log_nature_logits=tf.nn.log_softmax(self.visited_logits, axis=-1)
@@ -109,8 +109,8 @@ class Attacker(BatchAttack):
         ys_cp = ys.copy()
         xs_lo_cp, xs_hi_cp = xs_lo.copy(), xs_hi.copy()
         xs_adv = xs.copy()
-        #visted_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
-        #visted_logits = visted_logits[:, None, :]
+        #visited_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
+        #visited_logits = visted_logits[:, None, :]
 
         round_num = 20
         return_xs_adv = xs.copy()
@@ -126,9 +126,9 @@ class Attacker(BatchAttack):
         self.alpha = np.ones(self.batch_size)
 
         original_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
-        visted_logits = np.ones((self.batch_size, 20, self.num_classes))
-        visted_logits_list = [[original_logits[i].copy()] for i in range(self.batch_size)]
-        loss_prev = np.one(self.batch_size) * -1e8
+        visited_logits = np.ones((self.batch_size, 20, self.num_classes))
+        visited_logits_list = [[original_logits[i].copy()] for i in range(self.batch_size)]
+        loss_prev = np.ones(self.batch_size) * -1e8
 
         for i in range(self.iteration):
             ods_mask = np.zeros(self.batch_size, dtype=np.float32)
@@ -139,7 +139,7 @@ class Attacker(BatchAttack):
                     ods_mask[k] = 1
                     if restart_count[k]==0:
                         tf_w[k] = 2*np.random.uniform(size=(self.num_classes))-1
-                if restart_count%round_num[k]<=3:
+                if (restart_count%round_num)[k]<=3:
                     m[k] = np.zeros(xs.shape[1:])
                     v[k] = np.zeros(xs.shape[1:])
                     prev_grad[k] = np.zeros(xs.shape[1:])
@@ -149,7 +149,8 @@ class Attacker(BatchAttack):
                     else:
                         self.alpha[k] = self.eps / 2
                     """
-                visited_logits[k, :len(visted_logits_list[k]), :] = np.array(visted_logits_list[k])
+                visited_logits[k, :len(visited_logits_list[k]), :] = np.array(visited_logits_list[k])
+            visited_logits = visited_logits.astype(np.float32)
 
             restart_mask = ((restart_count%round_num<3) * 1.0).astype(np.float32)
 
@@ -159,12 +160,12 @@ class Attacker(BatchAttack):
                (self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw),
                #(self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
                feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
-                       #self.visited_logits:visted_logits, 
+                       #self.visited_logits:visited_logits, 
                        self.tf_w:tf_w,
                        self.restart_mask: restart_mask,
                        self.ods_mask: ods_mask,
                        self.lambda_ph: np.random.uniform(size=(self.batch_size,)),
-                       self.visited_logits:visted_logits, 
+                       self.visited_logits:visited_logits, 
                        })
 
 
@@ -174,7 +175,7 @@ class Attacker(BatchAttack):
                 if restart_count[k]>3 and loss_delta[k]<=0:
                 #if restart_count[k]>3 and loss_delta[k]<=1e-4:
                 #if (restart_count[k]+1) % round_num==0:
-                    visted_logits_list[k] += [logits[k]]
+                    visited_logits_list[k] += [logits[k]]
 
             free_ids = []
             for idx in (1-stop_mask).nonzero()[0]:
@@ -231,8 +232,8 @@ class Attacker(BatchAttack):
                 xs_lo_cp[free_id] = xs_lo[rand_img].copy()
                 xs_hi_cp[free_id] = xs_hi[rand_img].copy()
 
-                visted_logits_list[free_id] = [original_logits[rand_img].copy()]
-                visted_logits[free_id] = np.ones((20, self.num_classes))
+                visited_logits_list[free_id] = [original_logits[rand_img].copy()]
+                visited_logits[free_id] = np.ones((20, self.num_classes))
 
                 id2img[free_id] = rand_img
                 img2ids[rand_img] += [free_id]
