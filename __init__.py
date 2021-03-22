@@ -65,7 +65,7 @@ class Attacker(BatchAttack):
             loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
         elif loss_type=="kl":
             self.visited_logits_mask = tf.cast(
-                    tf.equal(
+                    tf.not_equal(
                         tf.reduce_sum(self.visited_logits, axis=-1), 
                         tf.constant(self.num_classes, dtype=tf.float32)), 
                 dtype=tf.float32)
@@ -156,8 +156,8 @@ class Attacker(BatchAttack):
 
             #self.alpha = self.eps * 2 * restart_mask + self.eps / 4 * (1-restart_mask)
 
-            grad, loss, stop_mask, logits, loss_cw  = self._session.run(
-               (self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw),
+            grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
+               (self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
                #(self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
                feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
                        #self.visited_logits:visited_logits, 
@@ -167,6 +167,8 @@ class Attacker(BatchAttack):
                        self.lambda_ph: np.random.uniform(size=(self.batch_size,)),
                        self.visited_logits:visited_logits, 
                        })
+
+            #print("logits_mask", logits_mask)
 
 
             loss_delta = loss_cw - loss_prev
