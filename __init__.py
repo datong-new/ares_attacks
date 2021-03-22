@@ -176,13 +176,13 @@ class Attacker(BatchAttack):
             for k in range(self.batch_size):
                 #if restart_count[k]>3 and loss_delta[k]<=0:
                 #if restart_count[k]>3 and loss_delta[k]<=1e-4:
-                if (restart_count[k]+1) % round_num==0:
+                if ((restart_count[k]+1) % round_num) in [0, (round-3)//2 ]:
                     visited_logits_list[k] += [logits[k]]
 
             free_ids = []
             for idx in (1-stop_mask).nonzero()[0]:
                 img = id2img[idx]
-                loss_cw[idx] = -1e-8
+                loss_cw[idx] = -1e8
                 if img in fail_set:
                     fail_set.remove(img) # one img may successs attack in different ids
                     return_xs_adv[img] = xs_adv[idx].copy()
@@ -218,7 +218,8 @@ class Attacker(BatchAttack):
             if len(fail_set)==0: break
 
             sort_idx = np.argsort(-loss_cw)
-            selected_idx = sort_idx[:3]
+            selected_idx = sort_idx[:5]
+            #print("loss cw", loss_cw[selected_idx])
 
             for free_id in free_ids:
                 # random select a img
