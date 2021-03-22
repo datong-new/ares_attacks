@@ -38,7 +38,8 @@ class Attacker(BatchAttack):
         self.loss_restart = self.ods_mask * self.loss_ods + (1-self.ods_mask) * self.loss_kl
 
         # attack loss
-        self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
+        #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
+        self.loss_attack = self.loss_zy  + self.loss_zmax
         #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax
         self.grad_attack = tf.gradients(self.loss_attack, self.xs_var)[0]
 
@@ -126,9 +127,9 @@ class Attacker(BatchAttack):
         self.alpha = np.ones(self.batch_size)
 
         original_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
-        visited_logits = np.ones((self.batch_size, 20, self.num_classes))
+        visited_logits = np.ones((self.batch_size, 21, self.num_classes))
         visited_logits_list = [[original_logits[i].copy()] for i in range(self.batch_size)]
-        loss_prev = np.ones(self.batch_size) * -1e8
+        loss_prev = np.ones(self.batch_size) * -1e4
 
         for i in range(self.iteration):
             ods_mask = np.zeros(self.batch_size, dtype=np.float32)
@@ -168,16 +169,23 @@ class Attacker(BatchAttack):
                        self.visited_logits:visited_logits, 
                        })
 
-            #print("logits_mask", logits_mask)
 
 
             loss_delta = loss_cw - loss_prev
-            prev_loss = loss_cw
+            loss_prev = loss_cw.copy()
+            #print("loss_delta", loss_delta)
             for k in range(self.batch_size):
-                #if restart_count[k]>3 and loss_delta[k]<=0:
-                #if restart_count[k]>3 and loss_delta[k]<=1e-4:
-                if ((restart_count[k]+1) % round_num) in [0, (round-3)//2 ]:
-                    visited_logits_list[k] += [logits[k]]
+                if restart_count[k]%round_num>3 and loss_delta[k]<=1e-4:
+                #if ((restart_count[k]+1) % round_num) in [0, (round_num-3)//2]:
+                    if len(visited_logits_list[k])==4:
+                        img = id2img[k]
+                        visited_logits_list[k] = [original_logits[img]]
+                        restart_count[k] = 0-1 # do ods
+                    else:
+                        visited_logits_list[k] += [logits[k]]
+                        restart_count[k] = round_num-1 # do kl
+                #if ((restart_count[k]+1) % round_num) in [0, (round_num-3)//2]:
+                #    visited_logits_list[k] += [logits[k]]
 
             free_ids = []
             for idx in (1-stop_mask).nonzero()[0]:
@@ -236,13 +244,13 @@ class Attacker(BatchAttack):
                 xs_hi_cp[free_id] = xs_hi[rand_img].copy()
 
                 visited_logits_list[free_id] = [original_logits[rand_img].copy()]
-                visited_logits[free_id] = np.ones((20, self.num_classes))
+                visited_logits[free_id] = np.ones((21, self.num_classes))
 
                 id2img[free_id] = rand_img
                 img2ids[rand_img] += [free_id]
 
                 #restart_count[free_id] = round_num
-                restart_count[free_id] = 0
+                restart_count[free_id] = 0-1
             #print(i, "fail len", len(fail_set))
 
             """
