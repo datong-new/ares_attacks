@@ -169,12 +169,12 @@ class Attacker(BatchAttack):
                        })
 
 
-            loss_delta = loss - loss_prev
-            prev_loss = loss
-            for i in range(self.batch_size):
-                if restart_count[k]>3 and loss_delta[k]<=0:
+            loss_delta = loss_cw - loss_prev
+            prev_loss = loss_cw
+            for k in range(self.batch_size):
+                #if restart_count[k]>3 and loss_delta[k]<=0:
                 #if restart_count[k]>3 and loss_delta[k]<=1e-4:
-                #if (restart_count[k]+1) % round_num==0:
+                if (restart_count[k]+1) % round_num==0:
                     visited_logits_list[k] += [logits[k]]
 
             free_ids = []
