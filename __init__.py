@@ -47,7 +47,8 @@ class Attacker(BatchAttack):
 
         # attack loss
         #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
-        self.loss_attack = self.loss_zy  + self.loss_zmax + self.loss_kl
+        #self.loss_attack = self.loss_zy  + self.loss_zmax + self.loss_kl
+        self.loss_attack = self.loss_zy  + self.loss_zmax
         #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax
         self.grad_attack = tf.gradients(self.loss_attack, self.xs_var)[0]
 
@@ -127,7 +128,7 @@ class Attacker(BatchAttack):
         #visited_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         #visited_logits = visted_logits[:, None, :]
 
-        round_num = 20
+        round_num = 10
         return_xs_adv = xs.copy()
         restart_count = np.zeros(self.batch_size)
         id2img = [i for i in range(self.batch_size)]
@@ -135,8 +136,6 @@ class Attacker(BatchAttack):
         tf_w = 2*np.random.uniform(size=(self.batch_size, self.num_classes))-1
         fail_set = set(list(range(self.batch_size)))
 
-        m = np.zeros(xs.shape)
-        v = np.zeros(xs.shape)
         prev_grad = np.zeros(xs.shape)
         self.alpha = np.ones(self.batch_size)
 
@@ -147,13 +146,14 @@ class Attacker(BatchAttack):
 
         ## warm start
         m, v = 0,0
-        for i in range(10):
+        for i in range(20):
             grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
                #(self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
                (self.grad_warm, self.loss_warm, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
                feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
                    self.visited_logits:original_logits[:,None,:], 
                 })
+
             m = 0.9*m+0.1*grad
             m/=0.9
             v = 0.99*v + 0.01*(grad**2)
@@ -167,13 +167,16 @@ class Attacker(BatchAttack):
             b = (min_*max_alpha-max_*min_alpha) / (min_-max_-1e-6)
             self.alpha = 1
             grad_sign = a[:,None, None, None]*grad + b[:,None, None, None]
+            #grad_sign = np.sign(grad)
 
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo_cp, xs_hi_cp)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
 
         warm_points = xs_adv.copy()
+        m = np.zeros(xs.shape)
+        v = np.zeros(xs.shape)
 
-        for i in range(self.iteration-10):
+        for i in range(self.iteration-20):
             ods_mask = np.zeros(self.batch_size, dtype=np.float32)
 
             for k in range(self.batch_size):
@@ -218,16 +221,12 @@ class Attacker(BatchAttack):
             loss_prev = loss_cw.copy()
             #print("loss_delta", loss_delta)
             for k in range(self.batch_size):
-                #if restart_count[k]%round_num>3 and loss_delta[k]<=1e-4:
-                if ((restart_count[k]+1) % round_num) in [0, (round_num-3)//2]:
-                    if len(visited_logits_list[k])==4:
-                        img = id2img[k]
-                        visited_logits_list[k] = [original_logits[img]]
-                        xs_adv[k] = warm_points[img]
-                        restart_count[k] = 0-1 # do ods
-                    else:
-                        visited_logits_list[k] += [logits[k]]
-                        restart_count[k] = round_num-1 # do kl
+                if restart_count[k]%round_num>3 and loss_delta[k]<=1e-4:
+                #if ((restart_count[k]+1) % round_num) ==0:
+                    img = id2img[k]
+                    xs_adv[k] = warm_points[img]
+                    visited_logits_list[k] += [logits[k]]
+                    restart_count[k] = 0-1 # do kl
                 #if ((restart_count[k]+1) % round_num) in [0, (round_num-3)//2]:
                 #    visited_logits_list[k] += [logits[k]]
 
@@ -246,7 +245,6 @@ class Attacker(BatchAttack):
             """
             grad_sign = np.sign(grad) * (3**(np.sign(prev_grad)*np.sign(grad)))
             prev_grad = grad
-            """
 
             m = 0.9*m+0.1*grad
             m/=0.9
@@ -261,6 +259,11 @@ class Attacker(BatchAttack):
             b = (min_*max_alpha-max_*min_alpha) / (min_-max_-1e-6)
             self.alpha = 1
             grad_sign = a[:,None, None, None]*grad + b[:,None, None, None]
+            """
+            self.alpha = self.eps
+            grad_sign = np.sign(grad)
+            # grad = m * 0.9 + 0.1 * grad
+            # m  = grad
 
 
 
