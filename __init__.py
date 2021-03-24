@@ -128,7 +128,7 @@ class Attacker(BatchAttack):
         #visited_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         #visited_logits = visted_logits[:, None, :]
 
-        round_num = 10
+        round_num = 20
         return_xs_adv = xs.copy()
         restart_count = np.zeros(self.batch_size)
         id2img = [i for i in range(self.batch_size)]
@@ -154,6 +154,7 @@ class Attacker(BatchAttack):
                    self.visited_logits:original_logits[:,None,:], 
                 })
 
+
             m = 0.9*m+0.1*grad
             m/=0.9
             v = 0.99*v + 0.01*(grad**2)
@@ -167,7 +168,6 @@ class Attacker(BatchAttack):
             b = (min_*max_alpha-max_*min_alpha) / (min_-max_-1e-6)
             self.alpha = 1
             grad_sign = a[:,None, None, None]*grad + b[:,None, None, None]
-            #grad_sign = np.sign(grad)
 
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo_cp, xs_hi_cp)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
@@ -261,9 +261,9 @@ class Attacker(BatchAttack):
             grad_sign = a[:,None, None, None]*grad + b[:,None, None, None]
             """
             self.alpha = self.eps
+            grad = m * 0.9 + 0.1 * grad
+            m  = grad
             grad_sign = np.sign(grad)
-            # grad = m * 0.9 + 0.1 * grad
-            # m  = grad
 
 
 
