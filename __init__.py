@@ -269,7 +269,6 @@ class Attacker(BatchAttack):
 
 
             #grad_sign = np.sign(grad)
-            """
             grad_sign = np.sign(grad) * (3**(np.sign(prev_grad)*np.sign(grad)))
             prev_grad = grad
 
@@ -291,6 +290,7 @@ class Attacker(BatchAttack):
             grad = m * 0.9 + 0.1 * grad
             m  = grad
             grad_sign = np.sign(grad)
+            """
 
 
 
