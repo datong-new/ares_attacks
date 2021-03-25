@@ -31,11 +31,16 @@ class Attacker(BatchAttack):
         self.grad_ods = tf.gradients(self.loss_ods, self.xs_var)[0]
 
         self.loss_zy = self._get_loss(self.logits, self.label, loss_type="z_y")
+        self.grad_zy = tf.gradients(self.loss_zy, self.xs_var)[0]
+
         self.loss_zmax = self._get_loss(self.logits, self.label, loss_type="z_max")
+        self.grad_zmax = tf.gradients(self.loss_zmax, self.xs_var)[0]
+
         self.loss_kl = self._get_loss(self.logits, self.label, loss_type="kl")
+        self.grad_kl = tf.gradients(self.loss_kl, self.xs_var)[0]
         self.loss_ce = self._get_loss(self.logits, self.label, loss_type="ce")
         self.loss_cw = self.loss_zmax + self.loss_zy
-        self.grad_kl = tf.gradients(self.loss_kl, self.xs_var)[0]
+        self.grad_cw = tf.gradients(self.loss_cw, self.xs_var)[0]
         self.loss_restart = self.ods_mask * self.loss_ods + (1-self.ods_mask) * self.loss_kl
 
         ## warm loss
@@ -128,7 +133,7 @@ class Attacker(BatchAttack):
         #visited_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         #visited_logits = visted_logits[:, None, :]
 
-        round_num = 20
+        round_num = 10
         return_xs_adv = xs.copy()
         restart_count = np.zeros(self.batch_size)
         id2img = [i for i in range(self.batch_size)]
@@ -147,12 +152,32 @@ class Attacker(BatchAttack):
         ## warm start
         m, v = 0,0
         for i in range(20):
-            grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
-               #(self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
-               (self.grad_warm, self.loss_warm, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
-               feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
-                   self.visited_logits:original_logits[:,None,:], 
-                })
+            if i<15:
+                grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
+                   #(self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   (self.grad_warm, self.loss_warm, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
+                       self.visited_logits:original_logits[:,None,:], 
+                    })
+
+            if i>=15 and i%2==1:
+                grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
+                   #(self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   #(self.grad_zmax, self.loss_zmax, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   (self.grad_zmax, self.loss_zmax, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
+                       self.visited_logits:original_logits[:,None,:], 
+                    })
+
+            if i>=15 and i%2==0:
+                grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
+                   #(self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   #(self.grad_zmax, self.loss_zmax, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   (self.grad_zy, self.loss_zy, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
+                       self.visited_logits:original_logits[:,None,:], 
+                    })
+
 
 
             m = 0.9*m+0.1*grad
@@ -231,9 +256,14 @@ class Attacker(BatchAttack):
                 #    visited_logits_list[k] += [logits[k]]
 
             free_ids = []
+            free_id_loss = []
+            for idx in stop_mask.nonzero()[0]:
+                free_id_loss += [[idx, loss_cw[idx]]]
+
             for idx in (1-stop_mask).nonzero()[0]:
                 img = id2img[idx]
                 loss_cw[idx] = -1e8
+
                 if img in fail_set:
                     fail_set.remove(img) # one img may successs attack in different ids
                     return_xs_adv[img] = xs_adv[idx].copy()
@@ -272,14 +302,24 @@ class Attacker(BatchAttack):
 
             if len(fail_set)==0: break
 
-            sort_idx = np.argsort(-loss_cw)
-            selected_idx = sort_idx[:10]
-            #print("loss cw", loss_cw[selected_idx])
+
+            sort_id_loss = sorted(free_id_loss, key=lambda x: -x[1])
+            selected_idx = [idx[0] for idx in sort_id_loss[:5]]
+            selected_img = [id2img[idx] for idx in selected_idx]
+            print("selected_img", selected_img)
+            print("failset", fail_set)
+
+            for idx in selected_idx:
+                if not id2img[idx] in fail_set:
+                    print(idx in fail_set)
+                    exit(0)
 
             for free_id in free_ids:
                 # random select a img
-                rand_copy_id = selected_idx[random.randint(0, len(selected_idx)-1)]
-                rand_img = id2img[rand_copy_id]
+                while True:
+                    rand_copy_id = selected_idx[random.randint(0, len(selected_idx)-1)]
+                    rand_img = id2img[rand_copy_id]
+                    if rand_img in fail_set: break
 
                 #rand_img = list(fail_set)[random.randint(0, len(fail_set)-1)]
                 #rand_copy_id = img2ids[rand_img][random.randint(0, len(img2ids[rand_img])-1)]
