@@ -133,7 +133,7 @@ class Attacker(BatchAttack):
         #visited_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
         #visited_logits = visted_logits[:, None, :]
 
-        round_num = 10
+        round_num = 20
         return_xs_adv = xs.copy()
         restart_count = np.zeros(self.batch_size)
         id2img = [i for i in range(self.batch_size)]
@@ -256,9 +256,6 @@ class Attacker(BatchAttack):
                 #    visited_logits_list[k] += [logits[k]]
 
             free_ids = []
-            free_id_loss = []
-            for idx in stop_mask.nonzero()[0]:
-                free_id_loss += [[idx, loss_cw[idx]]]
 
             for idx in (1-stop_mask).nonzero()[0]:
                 img = id2img[idx]
@@ -300,26 +297,27 @@ class Attacker(BatchAttack):
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo_cp, xs_hi_cp)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
 
+
             if len(fail_set)==0: break
 
+            copy_id_loss = []
+            for img in fail_set:
+                ids = img2ids[img]
+                loss_max = -1e8
+                for idx in ids:
+                    if loss_max<loss_cw[idx]:
+                        loss_max = loss_max
+                copy_id_loss+=[[ids[0], loss_max]]
 
-            sort_id_loss = sorted(free_id_loss, key=lambda x: -x[1])
-            selected_idx = [idx[0] for idx in sort_id_loss[:5]]
-            selected_img = [id2img[idx] for idx in selected_idx]
-            print("selected_img", selected_img)
-            print("failset", fail_set)
-
-            for idx in selected_idx:
-                if not id2img[idx] in fail_set:
-                    print(idx in fail_set)
-                    exit(0)
+            sort_id_loss = sorted(copy_id_loss, key=lambda x: -x[1])
+            #selected_idx = [idx[0] for idx in sort_id_loss[:10]]
+            selected_idx = [idx[0] for idx in sort_id_loss]
+            #selected_img = [id2img[idx] for idx in selected_idx]
 
             for free_id in free_ids:
                 # random select a img
-                while True:
-                    rand_copy_id = selected_idx[random.randint(0, len(selected_idx)-1)]
-                    rand_img = id2img[rand_copy_id]
-                    if rand_img in fail_set: break
+                rand_copy_id = selected_idx[random.randint(0, len(selected_idx)-1)]
+                rand_img = id2img[rand_copy_id]
 
                 #rand_img = list(fail_set)[random.randint(0, len(fail_set)-1)]
                 #rand_copy_id = img2ids[rand_img][random.randint(0, len(img2ids[rand_img])-1)]
