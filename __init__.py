@@ -15,6 +15,8 @@ class Attacker(BatchAttack):
             self.num_classes=1000
         else:
             self.num_classes=10
+
+        self.success_logits = [[] for _ in range(self.num_classes)]
         
         # placeholder for batch_attack's inputvar
         self.xs_var = get_xs_ph(model, batch_size)
@@ -22,6 +24,7 @@ class Attacker(BatchAttack):
         self.restart_mask = tf.placeholder(self.model.x_dtype, [batch_size, ])
         self.ods_mask = tf.placeholder(self.model.x_dtype, [batch_size, ])
         self.visited_logits = tf.placeholder(self.model.x_dtype, [batch_size, None, self.num_classes])
+        self.target_logits_ph = tf.placeholder(self.model.x_dtype, [batch_size, self.num_classes])
         self.tf_w = tf.placeholder(self.model.x_dtype, [batch_size, self.num_classes])
 
         self.lambda_ph = tf.placeholder(self.model.x_dtype, [batch_size, ])
@@ -31,14 +34,32 @@ class Attacker(BatchAttack):
         self.grad_ods = tf.gradients(self.loss_ods, self.xs_var)[0]
 
         self.loss_zy = self._get_loss(self.logits, self.label, loss_type="z_y")
+        self.grad_zy = tf.gradients(self.loss_zy, self.xs_var)[0]
+
         self.loss_zmax = self._get_loss(self.logits, self.label, loss_type="z_max")
+        self.grad_zmax = tf.gradients(self.loss_zmax, self.xs_var)[0]
+
         self.loss_kl = self._get_loss(self.logits, self.label, loss_type="kl")
-        self.loss_cw = self.loss_zmax + self.loss_zy
         self.grad_kl = tf.gradients(self.loss_kl, self.xs_var)[0]
-        self.loss_restart = self.ods_mask * self.loss_ods + (1-self.ods_mask) * self.loss_kl
+
+        self.loss_target_kl = self._get_loss(self.logits, self.label, loss_type="target_kl")
+        self.grad_target_kl = tf.gradients(self.loss_kl, self.xs_var)[0]
+        self.loss_ce = self._get_loss(self.logits, self.label, loss_type="ce")
+        self.loss_cw = self.loss_zmax + self.loss_zy
+        self.grad_cw = tf.gradients(self.loss_cw, self.xs_var)[0]
+        self.loss_restart = self.ods_mask * self.loss_ods + (1-self.ods_mask) * self.loss_target_kl
+
+        ## warm loss
+        #self.loss_warm = self.loss_ce + self.loss_kl
+        #self.loss_warm = self.loss_ce
+        #self.loss_warm = self.loss_zy
+        self.loss_warm = self._get_loss(self.logits, self.label, loss_type="warm")
+        self.grad_warm = tf.gradients(self.loss_warm, self.xs_var)[0]
 
         # attack loss
-        self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
+        #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax + self.loss_kl
+        #self.loss_attack = self.loss_zy  + self.loss_zmax + self.loss_kl
+        self.loss_attack = self.loss_zy  + self.loss_zmax 
         #self.loss_attack = self.lambda_ph * self.loss_zy + (1-self.lambda_ph) * self.loss_zmax
         self.grad_attack = tf.gradients(self.loss_attack, self.xs_var)[0]
 
@@ -47,6 +68,8 @@ class Attacker(BatchAttack):
         self.grad = tf.gradients(self.loss, self.xs_var)[0]
 
         self.stop_mask = tf.cast(tf.equal(self.label, self.ys_var), dtype=tf.float32)
+
+
 
     def init_delta(self):
         return (2*np.random.uniform(size=self.xs_var.shape)-1) * self.eps
@@ -65,19 +88,32 @@ class Attacker(BatchAttack):
             loss += tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.ys_var, logits=logits)
         elif loss_type=="kl":
             self.visited_logits_mask = tf.cast(
-                    tf.equal(
+                    tf.not_equal(
                         tf.reduce_sum(self.visited_logits, axis=-1), 
-                        tf.constant(self.num_classes)), 
+                        tf.constant(self.num_classes, dtype=tf.float32)), 
                 dtype=tf.float32)
 
             log_nature_logits=tf.nn.log_softmax(self.visited_logits, axis=-1)
-            log_logits=tf.nn.log_softmax(logits, axis=-1)
-
             exp_nature_logits=tf.exp(log_nature_logits)
-            neg_ent = tf.reduce_sum(exp_nature_logits* log_nature_logits, axis=-1)
-            neg_cross_ent = tf.reduce_sum(exp_nature_logits * log_logits[:, None, :], axis=-1)
+
+            log_logits=tf.nn.log_softmax(logits, axis=-1)[:,None,:]
+            exp_logits = tf.exp(log_logits)
+
+            neg_ent = tf.reduce_sum(exp_logits* log_logits, axis=-1)
+            neg_cross_ent = tf.reduce_sum(exp_logits * log_nature_logits, axis=-1)
             kl_loss = neg_ent - neg_cross_ent
             loss = tf.reduce_sum(kl_loss*self.visited_logits_mask, axis=-1) / tf.reduce_sum(self.visited_logits_mask, axis=-1)
+        elif loss_type=="target_kl":
+            log_logits=tf.nn.log_softmax(logits, axis=-1)
+            exp_logits = tf.exp(log_logits)
+
+            log_target_logits = tf.nn.log_softmax(self.target_logits_ph, axis=-1)
+            exp_target_logits = tf.exp(log_target_logits)
+
+            neg_ent =  tf.reduce_sum(exp_logits* log_logits, axis=-1)
+            neg_cross_ent = tf.reduce_sum(exp_logits * log_target_logits, axis=-1)
+            loss_ = neg_ent - neg_cross_ent
+            loss = - loss_
         elif loss_type=="emd":
 
             tmp = tf.square((tf.cumsum(tf.nn.softmax(self.visited_logits, axis=-1), axis=-1) - tf.cumsum(tf.nn.softmax(logits[:, None, :], axis=-1), axis=-1)))
@@ -94,6 +130,12 @@ class Attacker(BatchAttack):
             label_score = tf.reduce_sum(mask*logits, axis=1)
             second_scores = tf.reduce_max((1- mask) * logits - 1e4*mask,  axis=1)
             loss = second_scores
+        elif loss_type=="warm":
+            mask = tf.one_hot(self.ys_var, depth=tf.shape(logits)[1])
+            label_score = tf.reduce_sum(mask*logits, axis=1)
+            others = tf.reduce_sum((1- mask) * logits - 1e4*mask, axis=1)
+            #loss = -label_score+others
+            loss = others
 
         return loss
 
@@ -104,13 +146,15 @@ class Attacker(BatchAttack):
             self.iteration = 100
 
     def batch_attack(self, xs, ys=None, ys_target=None):
+        #for k in range(self.num_classes):
+            #print(k, len(self.success_logits[k]))
 
         xs_lo, xs_hi = xs - self.eps, xs + self.eps
         ys_cp = ys.copy()
         xs_lo_cp, xs_hi_cp = xs_lo.copy(), xs_hi.copy()
         xs_adv = xs.copy()
-        #visted_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
-        #visted_logits = visted_logits[:, None, :]
+        #visited_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
+        #visited_logits = visted_logits[:, None, :]
 
         round_num = 20
         return_xs_adv = xs.copy()
@@ -120,78 +164,44 @@ class Attacker(BatchAttack):
         tf_w = 2*np.random.uniform(size=(self.batch_size, self.num_classes))-1
         fail_set = set(list(range(self.batch_size)))
 
-        m = np.zeros(xs.shape)
-        v = np.zeros(xs.shape)
         prev_grad = np.zeros(xs.shape)
         self.alpha = np.ones(self.batch_size)
 
         original_logits = self._session.run(self.logits, feed_dict={self.xs_var: xs_adv, self.ys_var: ys})
-        visted_logits = np.ones((self.batch_size, 20, self.num_classes))
-        visted_logits_list = [[original_logits[i].copy()] for i in range(self.batch_size)]
-        loss_prev = np.one(self.batch_size) * -1e8
+        visited_logits = np.ones((self.batch_size, 21, self.num_classes))
+        visited_logits_list = [[original_logits[i].copy()] for i in range(self.batch_size)]
+        loss_prev = np.ones(self.batch_size) * -1e4
 
-        for i in range(self.iteration):
-            ods_mask = np.zeros(self.batch_size, dtype=np.float32)
+        ## warm start
+        m, v = 0,0
+        for i in range(0):
+            if i<15:
+                grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
+                   #(self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   (self.grad_warm, self.loss_warm, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
+                       self.visited_logits:original_logits[:,None,:], 
+                    })
 
-            for k in range(self.batch_size):
-                #if restart_count[k]==3 or restart_count[k]==0:
-                if restart_count[k]<3:
-                    ods_mask[k] = 1
-                    if restart_count[k]==0:
-                        tf_w[k] = 2*np.random.uniform(size=(self.num_classes))-1
-                if restart_count%round_num[k]<=3:
-                    m[k] = np.zeros(xs.shape[1:])
-                    v[k] = np.zeros(xs.shape[1:])
-                    prev_grad[k] = np.zeros(xs.shape[1:])
-                    """
-                    if restart_count[k]<3:
-                        self.alpha[k] = self.eps * 2
-                    else:
-                        self.alpha[k] = self.eps / 2
-                    """
-                visited_logits[k, :len(visted_logits_list[k]), :] = np.array(visted_logits_list[k])
+            if i>=15 and i%2==1:
+                grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
+                   #(self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   #(self.grad_zmax, self.loss_zmax, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   (self.grad_zmax, self.loss_zmax, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
+                       self.visited_logits:original_logits[:,None,:], 
+                    })
 
-            restart_mask = ((restart_count%round_num<3) * 1.0).astype(np.float32)
-
-            #self.alpha = self.eps * 2 * restart_mask + self.eps / 4 * (1-restart_mask)
-
-            grad, loss, stop_mask, logits, loss_cw  = self._session.run(
-               (self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw),
-               #(self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
-               feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
-                       #self.visited_logits:visted_logits, 
-                       self.tf_w:tf_w,
-                       self.restart_mask: restart_mask,
-                       self.ods_mask: ods_mask,
-                       self.lambda_ph: np.random.uniform(size=(self.batch_size,)),
-                       self.visited_logits:visted_logits, 
-                       })
+            if i>=15 and i%2==0:
+                grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
+                   #(self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   #(self.grad_zmax, self.loss_zmax, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   (self.grad_zy, self.loss_zy, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+                   feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
+                       self.visited_logits:original_logits[:,None,:], 
+                    })
 
 
-            loss_delta = loss - loss_prev
-            prev_loss = loss
-            for i in range(self.batch_size):
-                if restart_count[k]>3 and loss_delta[k]<=0:
-                #if restart_count[k]>3 and loss_delta[k]<=1e-4:
-                #if (restart_count[k]+1) % round_num==0:
-                    visted_logits_list[k] += [logits[k]]
-
-            free_ids = []
-            for idx in (1-stop_mask).nonzero()[0]:
-                img = id2img[idx]
-                loss_cw[idx] = -1e-8
-                if img in fail_set:
-                    fail_set.remove(img) # one img may successs attack in different ids
-                    return_xs_adv[img] = xs_adv[idx].copy()
-
-                    free_ids += img2ids[img]
-
-
-            #grad_sign = np.sign(grad)
-            """
-            grad_sign = np.sign(grad) * (3**(np.sign(prev_grad)*np.sign(grad)))
-            prev_grad = grad
-            """
 
             m = 0.9*m+0.1*grad
             m/=0.9
@@ -207,15 +217,146 @@ class Attacker(BatchAttack):
             self.alpha = 1
             grad_sign = a[:,None, None, None]*grad + b[:,None, None, None]
 
+            xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo_cp, xs_hi_cp)
+            xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
+
+        warm_points = xs_adv.copy()
+        m = np.zeros(xs.shape)
+        v = np.zeros(xs.shape)
+
+        ods_mask = np.zeros(self.batch_size, dtype=np.float32)
+        target_logits = np.ones((self.batch_size, self.num_classes))
+        warm_steps = 8
+
+        for i in range(self.iteration):
+
+            for k in range(self.batch_size):
+                #if restart_count[k]==3 or restart_count[k]==0:
+                if restart_count[k]==0:
+                    c = ys_cp[k]
+                    rand = random.randint(0, len(self.success_logits[c]))
+                    if rand>=len(self.success_logits[c]):
+                        ods_mask[k]=1
+                        tf_w[k] = 2*np.random.uniform(size=(self.num_classes))-1
+                    else:
+                        ods_mask[k] = 0
+                        target_logits[k] = self.success_logits[c][rand]
+
+                if (restart_count%round_num)[k]<=warm_steps:
+                    m[k] = np.zeros(xs.shape[1:])
+                    v[k] = np.zeros(xs.shape[1:])
+                    prev_grad[k] = np.zeros(xs.shape[1:])
+                    """
+                    if restart_count[k]<3:
+                        self.alpha[k] = self.eps * 2
+                    else:
+                        self.alpha[k] = self.eps / 2
+                    """
+                visited_logits[k, :len(visited_logits_list[k]), :] = np.array(visited_logits_list[k])
+            visited_logits = visited_logits.astype(np.float32)
+
+            restart_mask = ((restart_count%round_num<warm_steps) * 1.0).astype(np.float32)
+
+            #self.alpha = self.eps * 2 * restart_mask + self.eps / 4 * (1-restart_mask)
+
+            grad, loss, stop_mask, logits, loss_cw, logits_mask  = self._session.run(
+               (self.grad, self.loss, self.stop_mask, self.logits, self.loss_cw, self.visited_logits_mask),
+               #(self.grad_kl, self.loss_kl, self.stop_mask, self.logits),
+               feed_dict={self.xs_var: xs_adv, self.ys_var: ys_cp, 
+                       #self.visited_logits:visited_logits, 
+                       self.tf_w:tf_w,
+                       self.restart_mask: restart_mask,
+                       self.ods_mask: ods_mask,
+                       self.lambda_ph: np.random.uniform(size=(self.batch_size,)),
+                       #self.visited_logits:visited_logits, 
+                       self.visited_logits:original_logits[:,None,:], 
+                       self.target_logits_ph: target_logits,
+                       })
+
+            """
+
+            for k in range(self.batch_size):
+                if ods_mask[k]==0 and restart_count[k]<warm_steps:
+                    print(i, k, loss[k])
+            """
+
+
+
+
+            loss_delta = loss_cw - loss_prev
+            loss_prev = loss_cw.copy()
+            #print("loss_delta", loss_delta)
+            for k in range(self.batch_size):
+                if restart_count[k]%round_num>warm_steps and loss_delta[k]<=1e-4:
+                #if ((restart_count[k]+1) % round_num) ==0:
+                    img = id2img[k]
+                    xs_adv[k] = warm_points[img]
+                    visited_logits_list[k] += [logits[k]]
+                    restart_count[k] = 0-1 # do ods
+                    #restart_count[k] = round_num-1 # do kl
+
+                #if ((restart_count[k]+1) % round_num) in [0, (round_num-3)//2]:
+                #    visited_logits_list[k] += [logits[k]]
+
+            free_ids = []
+
+            for idx in (1-stop_mask).nonzero()[0]:
+                img = id2img[idx]
+                self.success_logits[ys_cp[idx]] += [logits[idx]]
+                loss_cw[idx] = -1e8
+
+                if img in fail_set:
+                    fail_set.remove(img) # one img may successs attack in different ids
+                    return_xs_adv[img] = xs_adv[idx].copy()
+
+                    free_ids += img2ids[img]
+
+
+            #grad_sign = np.sign(grad)
+            grad_sign = np.sign(grad) * (3**(np.sign(prev_grad)*np.sign(grad)))
+            prev_grad = grad
+
+            """
+            m = 0.9*m+0.1*grad
+            m/=0.9
+            v = 0.99*v + 0.01*(grad**2)
+            v/=0.99
+            grad = m / (np.sqrt(v)+1e-8)
+
+            max_ = np.max(np.abs(grad), axis=(1,2,3))
+            min_ = np.min(np.abs(grad), axis=(1,2,3))
+            max_alpha, min_alpha = self.eps*2, self.eps/4
+            a = (max_alpha-min_alpha) / (max_-min_+1e-6)
+            b = (min_*max_alpha-max_*min_alpha) / (min_-max_-1e-6)
+            self.alpha = 1
+            grad_sign = a[:,None, None, None]*grad + b[:,None, None, None]
+            self.alpha = self.eps
+            grad = m * 0.9 + 0.1 * grad
+            m  = grad
+            grad_sign = np.sign(grad)
+            """
+
 
 
             xs_adv = np.clip(xs_adv + (self.alpha * stop_mask)[:, None, None, None] * grad_sign, xs_lo_cp, xs_hi_cp)
             xs_adv = np.clip(xs_adv, self.model.x_min, self.model.x_max)
 
+
             if len(fail_set)==0: break
 
-            sort_idx = np.argsort(-loss_cw)
-            selected_idx = sort_idx[:3]
+            copy_id_loss = []
+            for img in fail_set:
+                ids = img2ids[img]
+                loss_max = -1e8
+                for idx in ids:
+                    if loss_max<loss_cw[idx]:
+                        loss_max = loss_max
+                copy_id_loss+=[[ids[0], loss_max]]
+
+            sort_id_loss = sorted(copy_id_loss, key=lambda x: -x[1])
+            #selected_idx = [idx[0] for idx in sort_id_loss[:10]]
+            selected_idx = [idx[0] for idx in sort_id_loss]
+            #selected_img = [id2img[idx] for idx in selected_idx]
 
             for free_id in free_ids:
                 # random select a img
@@ -225,20 +366,20 @@ class Attacker(BatchAttack):
                 #rand_img = list(fail_set)[random.randint(0, len(fail_set)-1)]
                 #rand_copy_id = img2ids[rand_img][random.randint(0, len(img2ids[rand_img])-1)]
 
-                xs_adv[free_id] = xs_adv[rand_copy_id].copy() 
-                #xs_adv[free_id] = xs[rand_img].copy()
+                #xs_adv[free_id] = xs_adv[rand_copy_id].copy() 
+                xs_adv[free_id] = warm_points[rand_img].copy()
                 ys_cp[free_id] = ys[rand_img].copy()
                 xs_lo_cp[free_id] = xs_lo[rand_img].copy()
                 xs_hi_cp[free_id] = xs_hi[rand_img].copy()
 
-                visted_logits_list[free_id] = [original_logits[rand_img].copy()]
-                visted_logits[free_id] = np.ones((20, self.num_classes))
+                visited_logits_list[free_id] = [original_logits[rand_img].copy()]
+                visited_logits[free_id] = np.ones((21, self.num_classes))
 
                 id2img[free_id] = rand_img
                 img2ids[rand_img] += [free_id]
 
                 #restart_count[free_id] = round_num
-                restart_count[free_id] = 0
+                restart_count[free_id] = 0-1
             #print(i, "fail len", len(fail_set))
 
             """
